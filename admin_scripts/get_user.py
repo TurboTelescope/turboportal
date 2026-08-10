@@ -3,7 +3,7 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 
-url = "http://localhost:8000/api/user/3/roles"
+url = "http://tayamni.spa.umn.edu/api/user/3/roles"
 
 token = f'token {os.environ['API_KEY']}'
 
@@ -21,7 +21,7 @@ token = f'token {os.environ['API_KEY']}'
 
 import requests
 
-url = "http://localhost:8000/api/user/3"
+url = "http://tayamni.spa.umn.edu/api/user/3"
 
 headers = {"Authorization": token}
 

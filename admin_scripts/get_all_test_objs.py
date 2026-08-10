@@ -3,7 +3,7 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 
-url = "https://localhost:8000/api/sources"
+url = "https://tayamni.spa.umn.edu/api/sources"
 
 token = f'token {os.environ['API_KEY']}'
 

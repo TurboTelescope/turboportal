@@ -63,7 +63,8 @@ cp -r "$SCRIPT_DIR/data/dbdata" "$BACKUP_DIR/dbdata_raw"
 # 4. Final compression
 cd "$SCRIPT_DIR/backups"
 tar -czf "$BACKUP_NAME.tar.gz" "$BACKUP_NAME"
+mv "$BACKUP_NAME.tar.gz" "/mnt/waz/nas/backups/$BACKUP_NAME.tar.gz"
 rm -rf "$BACKUP_NAME"
 
 
-echo "Backup complete: ./backups/$BACKUP_NAME.tar.gz" 
+echo "Backup complete: /mnt/waz/nas/backups/$BACKUP_NAME.tar.gz" 

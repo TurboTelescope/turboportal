@@ -6,7 +6,8 @@ import time
 from dotenv import load_dotenv
 load_dotenv()
 
-url = "http://localhost:8000/api/"
+
+url = "http://tayamni.spa.umn.edu/api/"
 
 sci_cutout_png = "Donkey_Kong_character.png"
 
@@ -20,7 +21,6 @@ def parse_args():
     parser.add_argument('-pos', type=float, nargs=2, default=[45, 35], help='RA and Dec coordinates')
 
     return parser.parse_args()
-
 
 
 if __name__ == "__main__":
