@@ -1,9 +1,13 @@
+import asyncio
+import functools
 import traceback
-from datetime import datetime, timedelta
+from datetime import timedelta
 from json import JSONDecodeError
 
+import aiohttp
 import arrow
-import requests
+import sqlalchemy as sa
+from sqlalchemy.orm import selectinload
 
 from baselayer.app.env import load_env
 from baselayer.app.flow import Flow
@@ -11,6 +15,7 @@ from baselayer.log import make_log
 
 from ..utils import http
 from ..utils.calculations import deg2dms, deg2hms
+from ..utils.naive_datetime import utcnow_naive
 from ..utils.offset import _calculate_best_position_for_offset_stars, get_finding_chart
 from ..utils.parse import get_list_typed
 from . import FollowUpAPI
@@ -31,22 +36,45 @@ def get_api_url(program_id):
 
 
 class GeminiRequest:
-    def __init__(self, request, session):
-        self.payload = self._build_payload(request, session)
+    def __init__(self, payload):
+        self.payload = payload
 
-    def _get_guide_star(self, request, session):
+    @classmethod
+    async def create(cls, request, session):
+        """Async factory: build the payload, then construct the request."""
+        self = cls.__new__(cls)
+        self.payload = await self._build_payload(request, session)
+        return self
+
+    async def _get_guide_star(self, request, session):
         from ..models import Photometry
+
+        # Test hook: skip the external finder-chart / guide-star lookup (Gaia +
+        # image services) when a canned guide star is configured. Mirrors SEDM's
+        # config short-circuit; never set in production.
+        mock_gs = cfg.get("app.gemini.mock_guide_star")
+        if mock_gs:
+            return (
+                mock_gs["name"],
+                mock_gs["ra"],
+                mock_gs["dec"],
+                mock_gs["mag"],
+                mock_gs["pa"],
+                mock_gs.get("finding_chart_public_url"),
+            )
 
         best_ra, best_dec = request.obj.ra, request.obj.dec
 
-        photometry = session.scalars(
-            Photometry.select(session.user_or_token).where(
-                Photometry.obj_id == request.obj.id,
-                Photometry.origin.not_in(["alert_fp", "fp"]),
-                Photometry.flux.is_not(None),
-                Photometry.fluxerr.is_not(None),
-                Photometry.ra.is_not(None),
-                Photometry.dec.is_not(None),
+        photometry = (
+            await session.scalars(
+                Photometry.select(session.user_or_token).where(
+                    Photometry.obj_id == request.obj.id,
+                    Photometry.origin.not_in(["alert_fp", "fp"]),
+                    Photometry.flux.is_not(None),
+                    Photometry.fluxerr.is_not(None),
+                    Photometry.ra.is_not(None),
+                    Photometry.dec.is_not(None),
+                )
             )
         ).all()
 
@@ -76,27 +104,38 @@ class GeminiRequest:
         except Exception:
             raise ValueError("Invalid start_date or end_date")
 
-        duration = (end_date - start_date).seconds
+        duration = (end_date - start_date).total_seconds()
 
         obstime = start_date + timedelta(
             seconds=duration / 2
         )  # middle of the observation window
         obstime = obstime.strftime("%Y-%m-%d %H:%M:%S")
 
-        finder = get_finding_chart(
-            source_ra=best_ra,
-            source_dec=best_dec,
-            source_name=request.obj.id,
-            use_cache=True,
-            how_many=3,
-            radius_degrees=2 / 60,
-            mag_limit=18,
-            mag_min=10,
-            min_sep_arcsec=2,
-            obstime=obstime,
-            use_source_pos_in_starlist=False,
+        # get_finding_chart is a sync helper doing blocking IO (requests);
+        # run it off the event loop.
+        finder = await asyncio.to_thread(
+            functools.partial(
+                get_finding_chart,
+                source_ra=best_ra,
+                source_dec=best_dec,
+                source_name=request.obj.id,
+                use_cache=True,
+                how_many=3,
+                radius_degrees=2 / 60,
+                mag_limit=18,
+                mag_min=10,
+                min_sep_arcsec=2,
+                obstime=obstime,
+                use_source_pos_in_starlist=False,
+            )
         )
 
+        if not finder.get("success", True):
+            log(
+                f"Could not generate finding chart for {request.obj.id}: "
+                f"{finder.get('reason', 'unknown error')}"
+            )
+            return None, None, None, None, None, None
         offset_stars = finder.get("starlist", [])
         finding_chart_public_url = finder.get("public_url", None)
 
@@ -111,29 +150,17 @@ class GeminiRequest:
 
         return name, ra, dec, f"{mag:.1f}/UC/Vega", pa, finding_chart_public_url
 
-    def _build_payload(self, request, session):
+    async def _build_payload(self, request, session):
         altdata = request.allocation.altdata
         if not altdata:
             raise ValueError("Missing allocation information.")
 
         user_email = altdata.get("user_email")
         programid = altdata.get("programid")
-        user_password = altdata.get("user_password")
+        user_key = altdata.get("user_key", altdata.get("user_password"))
 
-        if user_email is None or programid is None or user_password is None:
-            raise ValueError("user_email, user_password, and programid are required")
-
-        # create the group str from the allocation's group nickname, PI, and id
-        allocation_group_name = (
-            request.allocation.group.nickname
-            if request.allocation.group.nickname
-            else request.allocation.group.name
-        )
-        allocation_group_name = allocation_group_name.replace(" ", "")
-        allocation_group_pi = request.allocation.pi.replace(" ", "")
-        allocation_id = request.allocation.id
-        group = f"{allocation_group_name}_{allocation_group_pi}_{allocation_id}"
-        group = str(group.replace(" ", "_")).strip()
+        if user_email is None or programid is None or user_key is None:
+            raise ValueError("user_email, user_key, and programid are required")
 
         target = request.obj.id
         ra, dec = request.obj.ra, request.obj.dec
@@ -172,7 +199,7 @@ class GeminiRequest:
         )  # UTC date YYYY-MM-DD for timing window
         l_wTime = start_date.format("HH:mm")  # UTC time HH:MM for timing window
         l_wDur = str(
-            (end_date - start_date).seconds // 3600
+            int((end_date - start_date).total_seconds() // 3600)
         )  # Timing window duration, integer hours
 
         l_elmin = str(
@@ -183,18 +210,24 @@ class GeminiRequest:
         ).strip()  # maximum airmass value
 
         # Guide star selection
-        gstarg, gsra, gsdec, gsmag, gspa, finding_chart_public_url = (
-            self._get_guide_star(request, session)
-        )
+        (
+            gstarg,
+            gsra,
+            gsdec,
+            gsmag,
+            gspa,
+            finding_chart_public_url,
+        ) = await self._get_guide_star(request, session)
         if gstarg is None:
             raise ValueError("No guide star found")
 
-        note = request.payload.get("note") or ""  # optional
-        note = f"{str(note).strip()}(finder chart: {finding_chart_public_url})"
-
-        notetitle = request.payload.get("notetitle")  # optional
-        if notetitle:
-            notetitle = str(notetitle).strip()
+        # optional
+        group_name = (
+            str(request.payload.get("group_name", "")).strip() or request.obj.id
+        )
+        note_title = str(request.payload.get("note_title", "")).strip() or None
+        note = request.payload.get("note", "")
+        note = f"{str(note).strip()}\n(finder chart: {finding_chart_public_url})"
 
         # templates available for the allocation
         template_ids = get_list_typed(
@@ -223,13 +256,13 @@ class GeminiRequest:
             payload = {
                 "prog": programid,
                 "email": user_email,
-                "password": user_password,
+                "password": user_key,
                 "obsnum": obsnum,
                 "target": target,
                 "ra": ra,
                 "dec": dec,
                 "posangle": gspa,
-                "noteTitle": notetitle,
+                "noteTitle": note_title,
                 "note": note,
                 "ready": ready,
                 "windowDate": l_wDate,
@@ -243,11 +276,19 @@ class GeminiRequest:
                 "gsdec": gsdec,
                 "gsmag": gsmag,
                 "gsprobe": "OIWFS",
-                "group": group,
+                "group": group_name,
             }
 
             if round(l_exptime) != 0:
                 payload.update({"exptime": round(l_exptime)})
+
+            # yarl (aiohttp params=) rejects None and, on newer versions, bool:
+            # omit unset optional fields and stringify bools (same wire value).
+            payload = {
+                k: (str(v) if isinstance(v, bool) else v)
+                for k, v in payload.items()
+                if v is not None
+            }
 
             payloads.append(payload)
 
@@ -263,9 +304,11 @@ class GEMINIAPI(FollowUpAPI):
         if not isinstance(altdata, dict):
             raise ValueError("Invalid altdata format")
 
-        user_email = str(altdata.get("user_email")).strip()
-        user_password = str(altdata.get("user_password")).strip()
-        programid = str(altdata.get("programid")).strip()
+        user_email = str(altdata.get("user_email") or "").strip()
+        user_key = str(
+            altdata.get("user_key", altdata.get("user_password")) or ""
+        ).strip()
+        programid = str(altdata.get("programid") or "").strip()
         if not any(programid.startswith(x) for x in ["GN", "GS"]):
             raise ValueError("Invalid program ID, must start with GN or GS")
 
@@ -285,8 +328,8 @@ class GEMINIAPI(FollowUpAPI):
         elif not any(x in instrument_name for x in ["north", "south", "gn", "gs"]):
             raise ValueError("Invalid instrument, must be Gemini North or South")
 
-        if not user_email or not user_password or not programid:
-            raise ValueError("user_email, user_password, and programid are required")
+        if not user_email or not user_key or not programid:
+            raise ValueError("user_email, user_key, and programid are required")
 
         template_ids = altdata.get("template_ids")
         if template_ids:
@@ -299,34 +342,50 @@ class GEMINIAPI(FollowUpAPI):
         return altdata
 
     @staticmethod
-    def submit(request, session, **kwargs):
+    async def submit(request, session, **kwargs):
         """
         Submit a request to the Gemini Observatory
         """
 
-        from ..models import FacilityTransaction
+        from ..models import Allocation, FacilityTransaction, FollowupRequest
+
+        # Reload with the lazy chains this method (and GeminiRequest) walks
+        # eager-loaded, since async sessions raise on implicit lazy loads.
+        request = await session.scalar(
+            sa.select(FollowupRequest)
+            .where(FollowupRequest.id == request.id)
+            .options(
+                selectinload(FollowupRequest.allocation).selectinload(
+                    Allocation.instrument
+                ),
+                selectinload(FollowupRequest.obj),
+            )
+        )
 
         altdata = request.allocation.altdata
         if not altdata:
             raise ValueError("Missing allocation information.")
 
         try:
-            gemini_request = GeminiRequest(request, session)
+            gemini_request = await GeminiRequest.create(request, session)
         except Exception as e:
             log(traceback.format_exc())
             raise ValueError(f"Error building Gemini request: {e}")
 
         failed_requests = []
         url = get_api_url(altdata.get("programid", ""))
-        for payload in gemini_request.payload:
-            r = requests.post(url, verify=False, params=payload)
-            if r.status_code != 200:
-                failed_requests.append(
-                    {
-                        "id": payload["obsnum"],
-                        "content": r.content.decode("utf-8"),
-                    }
-                )
+        async with aiohttp.ClientSession() as http_session:
+            for payload in gemini_request.payload:
+                async with http_session.post(url, ssl=False, params=payload) as r:
+                    content = await r.text()
+                    status = r.status
+                if status != 200:
+                    failed_requests.append(
+                        {
+                            "id": payload["obsnum"],
+                            "content": content,
+                        }
+                    )
 
         if not failed_requests:
             request.status = "submitted"
@@ -353,9 +412,10 @@ class GEMINIAPI(FollowUpAPI):
             except Exception as e:
                 log(f"Failed to send notification: {e}")
 
+        # Record the last request/response (params encoded in r.url).
         transaction = FacilityTransaction(
-            request=http.serialize_requests_request(r.request),
-            response=http.serialize_requests_response(r),
+            request=http.serialize_aiohttp_request("POST", r.url, {}, payload),
+            response=await http.serialize_aiohttp_response(r, content),
             followup_request=request,
             initiator_id=request.last_modified_by_id,
         )
@@ -387,12 +447,12 @@ class GEMINIAPI(FollowUpAPI):
             "start_date": {
                 "title": "Start Date (UT)",
                 "type": "string",
-                "default": str(datetime.utcnow() - timedelta(days=7)).replace("T", ""),
+                "default": str(utcnow_naive() - timedelta(days=7)).replace("T", ""),
             },
             "end_date": {
                 "title": "End Date (UT)",
                 "type": "string",
-                "default": str(datetime.utcnow()).replace("T", ""),
+                "default": str(utcnow_naive()).replace("T", ""),
             },
             "l_exptime": {
                 "title": "Exposure Time",
@@ -402,7 +462,12 @@ class GEMINIAPI(FollowUpAPI):
             },
             "l_elmin": {"title": "Minimum airmass", "type": "number", "default": 1.0},
             "l_elmax": {"title": "Maximum airmass", "type": "number", "default": 1.6},
-            "notetitle": {
+            "group_name": {
+                "title": "Group Name (optional)",
+                "type": "string",
+                "description": "Defaults to object ID if not provided",
+            },
+            "note_title": {
                 "title": "Note Title (optional)",
                 "type": "string",
             },
@@ -431,7 +496,11 @@ class GEMINIAPI(FollowUpAPI):
         "type": "object",
         "properties": {
             "user_email": {"type": "string", "title": "Email"},
-            "user_password": {"type": "string", "title": "Password"},
+            "user_key": {
+                "type": "string",
+                "title": "User Key",
+                "description": "CAUTION: A User Key is different from the allocation’s Program Key provided by the Gemini staff.",
+            },
             "programid": {
                 "type": "string",
                 "title": "Program ID",
@@ -443,7 +512,7 @@ class GEMINIAPI(FollowUpAPI):
                 "description": "List of available templates, comma separated (optional)",
             },
         },
-        "required": ["user_email", "user_password", "programid"],
+        "required": ["user_email", "user_key", "programid"],
     }
 
     ui_json_schema = {}

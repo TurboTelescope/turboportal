@@ -23,8 +23,9 @@ from .tarot import TAROTAPI
 from .tess import TESSAPI
 from .trt import TRTAPI
 from .ttt import TTTAPI
-from .winter import WINTERAPI
+from .winter import SPRINGAPI, WINTERAPI
 from .ztf import ZTFAPI, ZTFMMAAPI
+from .rubin import RUBINMMAAPI
 from .mmt.binospec import BINOSPECAPI
 from .mmt.mmirs import MMIRSAPI
 
@@ -58,6 +59,7 @@ APIS = (
     TESSAPI,
     TRTAPI,
     WINTERAPI,
+    SPRINGAPI,
     ZTFAPI,
     ZTFMMAAPI,
     GEMINIAPI,
@@ -65,6 +67,7 @@ APIS = (
     MMIRSAPI,
     TTTAPI,
     NEWFIRMAPI,
+    RUBINMMAAPI,
 )
 
 # Listeners, listed in implementation order, to keep matching enum in db stable

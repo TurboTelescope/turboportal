@@ -11,6 +11,7 @@ from baselayer.app.access import auth_or_token
 from baselayer.app.env import load_env
 from baselayer.log import make_log
 
+from ...utils.naive_datetime import utcnow_naive
 from ...utils.offset import (
     GaiaQuery,
     facility_parameters,
@@ -53,7 +54,7 @@ class UnsourcedFinderHandler(BaseHandler):
         - in: query
           name: ra
           schema:
-            type: float
+            type: number
             minimum: 0.0
             maximum: 360.0
             exclusiveMaximum: true
@@ -64,7 +65,7 @@ class UnsourcedFinderHandler(BaseHandler):
         - in: query
           name: dec
           schema:
-            type: float
+            type: number
             minimum: -90.0
             maximum: 90.0
             description: |
@@ -74,7 +75,7 @@ class UnsourcedFinderHandler(BaseHandler):
         - in: query
           name: imsize
           schema:
-            type: float
+            type: number
             minimum: 2
             maximum: 15
           description: Image size in arcmin (square). Defaults to 4.0
@@ -148,9 +149,12 @@ class UnsourcedFinderHandler(BaseHandler):
             return self.error(f"Invalid argument for `location_type`: {location_type}")
 
         obstime = self.get_query_argument(
-            "obstime", datetime.datetime.utcnow().isoformat()
+            "obstime",
+            utcnow_naive().isoformat(),
         )
-        if not isinstance(isoparse(obstime), datetime.datetime):
+        try:
+            isoparse(obstime)
+        except (ValueError, TypeError):
             return self.error("obstime is not valid isoformat")
 
         catalog_id = self.get_query_argument("catalog_id", "unknown")
@@ -276,6 +280,8 @@ class UnsourcedFinderHandler(BaseHandler):
             "Finding chart generation in progress. Download will start soon."
         )
         rez = await IOLoop.current().run_in_executor(None, finder)
+        if not rez.get("success", True):
+            return self.error(rez.get("reason", "Could not generate finding chart"))
 
         filename = rez["name"]
         data = io.BytesIO(rez["data"])
