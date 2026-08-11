@@ -1,28 +1,20 @@
 #!/bin/bash
 # restore_script.sh
+#
+# DESTRUCTIVE: restores a backup tarball in-place onto the LIVE compose project
+# (stops the stack, replaces config/ and data/dbdata, re-imports the SQL dump).
+# For restore-into-a-throwaway-container testing, do NOT use this script.
 
-# Exit on error
-set -e
+set -euo pipefail
 
-# Check if backup file was provided
-if [ -z "$1" ]; then
-    echo "Usage: ./restore_skyportal.sh ./backups/skyportal_backup_TIMESTAMP.tar.gz"
+if [ -z "${1:-}" ]; then
+    echo "Usage: ./restore_script.sh /path/to/skyportal_backup_TIMESTAMP.tar.gz"
     exit 1
 fi
 
 BACKUP_FILE=$1
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEMP_DIR="$SCRIPT_DIR/restore_temp"
-PGDATA_PATH="$SCRIPT_DIR/data/dbdata/pgdata"
-
-# Function to clear ACLs (matching your backup script logic)
-cleanup_acls() {
-    if [[ -d "$PGDATA_PATH" ]]; then
-        echo "🧹 Cleaning up ACLs on $PGDATA_PATH..."
-        sudo setfacl -R -b "$PGDATA_PATH"
-    fi
-}
-trap cleanup_acls EXIT
 
 echo "Preparing to restore from $BACKUP_FILE..."
 
@@ -34,21 +26,19 @@ tar -xzf "$BACKUP_FILE" -C "$TEMP_DIR" --strip-components=1
 echo "Stopping SkyPortal services..."
 docker-compose stop
 
-# 3. Restore Local Config and Raw Data
+# 3. Restore local config and raw data.
+# pgdata contents are owned by the postgres container's uid, so root is needed
+# to remove/replace them (the container entrypoint re-chowns pgdata on start).
 echo "Restoring config files..."
 rm -rf "$SCRIPT_DIR/config"
 cp -r "$TEMP_DIR/config_backup" "$SCRIPT_DIR/config"
 
 echo "Restoring raw dbdata files..."
-rm -rf "$SCRIPT_DIR/data/dbdata"
+sudo -n rm -rf "$SCRIPT_DIR/data/dbdata"
 mkdir -p "$SCRIPT_DIR/data"
-cp -r "$TEMP_DIR/dbdata_raw" "$SCRIPT_DIR/data/dbdata"
+sudo -n cp -r "$TEMP_DIR/dbdata_raw" "$SCRIPT_DIR/data/dbdata"
 
-# 4. Handle Permissions (Matching your backup script setup)
-echo "Applying ACLs to $PGDATA_PATH..."
-sudo setfacl -R -m u:turbo:rwX,m:rwX "$PGDATA_PATH"
-
-# 5. Restore Named Volumes (thumbnails & persistentdata)
+# 4. Restore named volumes (thumbnails & persistentdata)
 echo "Restoring thumbnails volume..."
 docker run --rm \
   -v thumbnails:/volume \
@@ -61,19 +51,21 @@ docker run --rm \
   -v "$TEMP_DIR":/backup \
   alpine sh -c "rm -rf /volume/* && tar -xzf /backup/persistentdata.tar.gz -C /volume"
 
-# 6. Start the DB container to perform the SQL restore
+# 5. Start the DB container to perform the SQL restore
 echo "Starting database for SQL restoration..."
 docker-compose up -d db
 echo "Waiting for database to be ready..."
-sleep 10 # Give Postgres a moment to initialize
+sleep 10
 
-# 7. SQL Restore (Logical Dump)
+# 6. SQL restore (logical dump). ON_ERROR_STOP so a failed restore cannot
+# masquerade as a successful one.
 echo "Re-importing SQL dump..."
-# Drop and recreate the public schema to ensure a clean slate
-docker exec -i postgres14.4 psql -U skyportal -d skyportal -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
-docker exec -i postgres14.4 psql -U skyportal -d skyportal < "$TEMP_DIR/db_dump.sql"
+docker exec -i postgres14.4 psql -U skyportal -d skyportal -v ON_ERROR_STOP=1 \
+    -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
+docker exec -i postgres14.4 psql -U skyportal -d skyportal -v ON_ERROR_STOP=1 \
+    < "$TEMP_DIR/db_dump.sql"
 
-# 8. Finalize and Restart Everything
+# 7. Finalize and restart everything
 echo "Restarting all services..."
 docker-compose up -d
 rm -rf "$TEMP_DIR"
