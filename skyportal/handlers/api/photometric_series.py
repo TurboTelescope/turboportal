@@ -1,4 +1,5 @@
 import os
+import textwrap
 import traceback
 
 import arrow
@@ -27,8 +28,9 @@ from ...models.photometric_series import (
     verify_metadata,
 )
 from ...models.stream import Stream
+from ...utils.data_access import default_share_public_group_name
 from ...utils.hdf5_files import load_dataframe_from_bytestream
-from ..base import BaseHandler
+from ..base import BaseHandler, format_doc
 
 _, cfg = load_env()
 
@@ -282,6 +284,16 @@ def get_group_ids(data, user, session):
         group = session.scalars(Group.select(user).where(Group.id == group_id)).first()
         if group is None:
             raise ValidationError(f"Invalid group ID: {group_id}")
+
+    if not group_ids:
+        # no groups specified: share with the configured default groups
+        public_group_name = default_share_public_group_name()
+        if public_group_name is not None:
+            public_group = session.scalars(
+                sa.select(Group).where(Group.name == public_group_name)
+            ).first()
+            if public_group is not None:
+                group_ids = [public_group.id]
 
     # always add the single user group
     group_ids.append(user.single_user_group.id)
@@ -700,8 +712,13 @@ def update_photometric_series(ps, json_data, data, attributes_metadata, user, se
 
 class PhotometricSeriesHandler(BaseHandler):
     @permissions(["Upload data"])
-    def post(self):
-        f"""
+    @format_doc(
+        body_schema_docstring=textwrap.indent(
+            body_schema_docstring.strip("\n"), " " * 10
+        ).lstrip()
+    )
+    async def post(self):
+        """
         ---
         summary: Upload a photometric series.
         description: Upload a photometric series.
@@ -767,8 +784,16 @@ class PhotometricSeriesHandler(BaseHandler):
         return self.success(data={"id": photometric_series_id})
 
     @permissions(["Upload data"])
-    def patch(self, photometric_series_id):
-        f"""
+    @format_doc(
+        body_schema_docstring=textwrap.indent(
+            body_schema_docstring.replace("required: true", "required: false").strip(
+                "\n"
+            ),
+            " " * 10,
+        ).lstrip()
+    )
+    async def patch(self, photometric_series_id: int):
+        """
         ---
         summary: Update a photometric series.
         description: |
@@ -790,7 +815,7 @@ class PhotometricSeriesHandler(BaseHandler):
             schema:
               type: integer
         requestBody:
-          {body_schema_docstring.replace("required: true", "required: false")}
+          {body_schema_docstring}
         responses:
           200:
             content:
@@ -851,7 +876,7 @@ class PhotometricSeriesHandler(BaseHandler):
             return self.success(data={"id": photometric_series_id})
 
     @permissions(["Upload data"])
-    def get(self, photometric_series_id=None):
+    async def get(self, photometric_series_id: int | None = None):
         """
         ---
         single:
@@ -1437,7 +1462,9 @@ class PhotometricSeriesHandler(BaseHandler):
         if series_obj_id:
             stmt = stmt.where(PhotometricSeries.series_obj_id == series_obj_id.strip())
         if filter:
-            stmt = stmt.where(PhotometricSeries.filter == filter)
+            # psycopg3 strict-binds the string against the enum column; cast
+            # explicitly so the comparison binds as the enum type.
+            stmt = stmt.where(sa.cast(PhotometricSeries.filter, sa.String) == filter)
         if channel:
             stmt = stmt.where(PhotometricSeries.channel == channel)
         if origin:
@@ -1794,11 +1821,16 @@ class PhotometricSeriesHandler(BaseHandler):
                 # sorting enums is done by default using their order in the original
                 # definition, which is not alphabetical order (which is what the user expects)
                 # ref: https://stackoverflow.com/a/23618085
+                # Cast the enum column to String for the case() value mapping
+                # — psycopg3 won't implicitly compare bandpasses to varchar.
                 whens = {
                     name: name
                     for name in getattr(PhotometricSeries, sort_by).type.enums
                 }
-                order_by_column = case(whens, value=getattr(PhotometricSeries, sort_by))
+                order_by_column = case(
+                    whens,
+                    value=sa.cast(getattr(PhotometricSeries, sort_by), sa.String),
+                )
             else:
                 order_by_column = getattr(PhotometricSeries, sort_by)
         except AttributeError:
@@ -1852,7 +1884,7 @@ class PhotometricSeriesHandler(BaseHandler):
             return self.success(data=results)
 
     @permissions(["Upload data"])
-    def delete(self, photometric_series_id):
+    async def delete(self, photometric_series_id: int):
         """
         ---
         summary: Delete a photometric series
@@ -1876,12 +1908,12 @@ class PhotometricSeriesHandler(BaseHandler):
                 schema: Error
         """
 
-        with self.Session() as session:
-            ps = session.scalars(
+        async with self.AsyncSession() as session:
+            ps = await session.scalar(
                 PhotometricSeries.select(session.user_or_token, mode="delete").where(
                     PhotometricSeries.id == photometric_series_id
                 )
-            ).first()
+            )
 
             if ps is None:
                 return self.error(
@@ -1890,8 +1922,8 @@ class PhotometricSeriesHandler(BaseHandler):
 
             obj_id = ps.obj_id
 
-            session.delete(ps)
-            session.commit()
+            await session.delete(ps)
+            await session.commit()
 
             self.push_all(
                 action="skyportal/REFRESH_SOURCE_PHOTOMETRY",

@@ -21,6 +21,7 @@ import sqlalchemy as sa
 from astroquery.ipac.irsa import Irsa
 from astroquery.vizier import Vizier
 from sqlalchemy.exc import IntegrityError
+from tornado.ioloop import IOLoop
 
 from baselayer.app.access import auth_or_token
 from baselayer.app.env import load_env
@@ -43,7 +44,7 @@ gaia = GaiaQuery()
 
 class GaiaQueryHandler(BaseHandler):
     @auth_or_token
-    def post(self, obj_id):
+    async def post(self, obj_id: str):
         """
         ---
         summary: Add Gaia annotations
@@ -103,17 +104,23 @@ class GaiaQueryHandler(BaseHandler):
           200:
             content:
               application/json:
-                schema: Success
+                schema:
+                  allOf:
+                    - $ref: '#/components/schemas/Success'
+                    - type: object
+                      properties:
+                        data:
+                          $ref: '#/components/schemas/Annotation'
           400:
             content:
               application/json:
                 schema: Error
         """
 
-        with self.Session() as session:
-            obj = session.scalars(
+        async with self.AsyncSession() as session:
+            obj = await session.scalar(
                 Obj.select(self.current_user).where(Obj.id == obj_id)
-            ).first()
+            )
             if obj is None:
                 return self.error(
                     f'Cannot find source with id "{obj_id}". ', status=403
@@ -121,7 +128,7 @@ class GaiaQueryHandler(BaseHandler):
 
             data = self.get_json()
 
-            author = self.associated_user_object
+            author_id = self.associated_user_object.id
 
             catalog = data.pop("catalog", "gaiadr3.gaia_source")
             radius_degrees = (
@@ -208,7 +215,7 @@ class GaiaQueryHandler(BaseHandler):
             group_ids = data.pop("group_ids", None)
 
             if not group_ids:
-                public_group = session.scalar(
+                public_group = await session.scalar(
                     sa.select(Group.id).where(
                         Group.name == cfg["misc.public_group_name"]
                     )
@@ -219,9 +226,10 @@ class GaiaQueryHandler(BaseHandler):
                     )
                 group_ids = [public_group]
 
-            groups = session.scalars(
+            groups_result = await session.scalars(
                 Group.select(self.current_user).where(Group.id.in_(group_ids))
-            ).all()
+            )
+            groups = list(groups_result.unique().all())
 
             if {g.id for g in groups} != set(group_ids):
                 return self.error(
@@ -245,7 +253,7 @@ class GaiaQueryHandler(BaseHandler):
                         data=annotation_data,
                         obj_id=obj_id,
                         origin=origin,
-                        author=author,
+                        author_id=author_id,
                         groups=groups,
                     )
                     annotations.append(annotation)
@@ -255,7 +263,7 @@ class GaiaQueryHandler(BaseHandler):
 
             session.add_all(annotations)
             try:
-                session.commit()
+                await session.commit()
             except IntegrityError:
                 return self.error("Annotation already posted.")
 
@@ -268,7 +276,7 @@ class GaiaQueryHandler(BaseHandler):
 
 class IRSAQueryWISEHandler(BaseHandler):
     @auth_or_token
-    def post(self, obj_id):
+    async def post(self, obj_id: str):
         """
         ---
         summary: Add WISE annotations
@@ -317,7 +325,13 @@ class IRSAQueryWISEHandler(BaseHandler):
           200:
             content:
               application/json:
-                schema: Success
+                schema:
+                  allOf:
+                    - $ref: '#/components/schemas/Success'
+                    - type: object
+                      properties:
+                        data:
+                          $ref: '#/components/schemas/Annotation'
           400:
             content:
               application/json:
@@ -325,10 +339,10 @@ class IRSAQueryWISEHandler(BaseHandler):
         """
 
         data = self.get_json()
-        with self.Session() as session:
-            obj = session.scalars(
+        async with self.AsyncSession() as session:
+            obj = await session.scalar(
                 Obj.select(self.current_user).where(Obj.id == obj_id)
-            ).first()
+            )
             if obj is None:
                 return self.error(
                     f'Cannot find source with id "{obj_id}". ', status=403
@@ -337,7 +351,7 @@ class IRSAQueryWISEHandler(BaseHandler):
             group_ids = data.pop("group_ids", None)
 
             if not group_ids:
-                public_group = session.scalar(
+                public_group = await session.scalar(
                     sa.select(Group.id).where(
                         Group.name == cfg["misc.public_group_name"]
                     )
@@ -347,27 +361,33 @@ class IRSAQueryWISEHandler(BaseHandler):
                         f'No group(s) were specified and the public group "{cfg["misc.public_group_name"]}" does not exist.'
                     )
                 group_ids = [public_group]
-            groups = session.scalars(
+            groups_result = await session.scalars(
                 Group.select(self.current_user).where(Group.id.in_(group_ids))
-            ).all()
+            )
+            groups = list(groups_result.unique().all())
 
             if {g.id for g in groups} != set(group_ids):
                 return self.error(
                     f"Cannot find one or more groups with IDs: {group_ids}.", status=403
                 )
 
-            author = self.associated_user_object
+            author_id = self.associated_user_object.id
 
             catalog = data.pop("catalog", "allwise_p3as_psd")
             radius_arcsec = data.pop("crossmatchRadius", 2.0)
             candidate_coord = SkyCoord(ra=obj.ra * u.deg, dec=obj.dec * u.deg)
 
-            df = Irsa.query_region(
-                coordinates=candidate_coord,
-                catalog=catalog,
-                spatial="Cone",
-                radius=radius_arcsec * u.arcsec,
-            ).to_pandas()
+            try:
+                df = Irsa.query_region(
+                    coordinates=candidate_coord,
+                    catalog=catalog,
+                    spatial="Cone",
+                    radius=radius_arcsec * u.arcsec,
+                ).to_pandas()
+            except Exception as e:
+                return self.error(
+                    f"Error querying IRSA ({catalog}) for {obj_id}: {e}. Please try again later."
+                )
 
             keys = [
                 "ra",
@@ -394,7 +414,7 @@ class IRSAQueryWISEHandler(BaseHandler):
                     data=annotation_data,
                     obj_id=obj_id,
                     origin=origin,
-                    author=author,
+                    author_id=author_id,
                     groups=groups,
                 )
                 annotations.append(annotation)
@@ -404,7 +424,7 @@ class IRSAQueryWISEHandler(BaseHandler):
 
             session.add_all(annotations)
             try:
-                session.commit()
+                await session.commit()
             except IntegrityError:
                 return self.error("Annotation already posted.")
 
@@ -417,7 +437,7 @@ class IRSAQueryWISEHandler(BaseHandler):
 
 class VizierQueryHandler(BaseHandler):
     @auth_or_token
-    def post(self, obj_id):
+    async def post(self, obj_id: str):
         """
         ---
         summary: Add Vizier annotations
@@ -467,7 +487,13 @@ class VizierQueryHandler(BaseHandler):
           200:
             content:
               application/json:
-                schema: Success
+                schema:
+                  allOf:
+                    - $ref: '#/components/schemas/Success'
+                    - type: object
+                      properties:
+                        data:
+                          $ref: '#/components/schemas/Annotation'
           400:
             content:
               application/json:
@@ -475,10 +501,10 @@ class VizierQueryHandler(BaseHandler):
         """
         data = self.get_json()
 
-        with self.Session() as session:
-            obj = session.scalars(
+        async with self.AsyncSession() as session:
+            obj = await session.scalar(
                 Obj.select(self.current_user).where(Obj.id == obj_id)
-            ).first()
+            )
             if obj is None:
                 return self.error(
                     f'Cannot find source with id "{obj_id}". ', status=403
@@ -487,7 +513,7 @@ class VizierQueryHandler(BaseHandler):
             group_ids = data.pop("group_ids", None)
 
             if not group_ids:
-                public_group = session.scalar(
+                public_group = await session.scalar(
                     sa.select(Group.id).where(
                         Group.name == cfg["misc.public_group_name"]
                     )
@@ -497,26 +523,32 @@ class VizierQueryHandler(BaseHandler):
                         f'No group(s) were specified and the public group "{cfg["misc.public_group_name"]}" does not exist.'
                     )
                 group_ids = [public_group]
-            groups = session.scalars(
+            groups_result = await session.scalars(
                 Group.select(self.current_user).where(Group.id.in_(group_ids))
-            ).all()
+            )
+            groups = list(groups_result.unique().all())
 
             if {g.id for g in groups} != set(group_ids):
                 return self.error(
                     f"Cannot find one or more groups with IDs: {group_ids}.", status=403
                 )
 
-            author = self.associated_user_object
+            author_id = self.associated_user_object.id
 
             catalog = data.pop("catalog", "VII/290")
             radius_arcsec = data.pop("crossmatchRadius", 2.0)
             candidate_coord = SkyCoord(ra=obj.ra * u.deg, dec=obj.dec * u.deg)
 
-            tl = Vizier.query_region(
-                coordinates=candidate_coord,
-                catalog=catalog,
-                radius=radius_arcsec * u.arcsec,
-            )
+            try:
+                tl = Vizier.query_region(
+                    coordinates=candidate_coord,
+                    catalog=catalog,
+                    radius=radius_arcsec * u.arcsec,
+                )
+            except Exception as e:
+                return self.error(
+                    f"Error querying Vizier ({catalog}) for {obj_id}: {e}. Please try again later."
+                )
 
             if len(tl) == 0:
                 return self.error("No successful cross-match available.")
@@ -547,7 +579,7 @@ class VizierQueryHandler(BaseHandler):
                     data=annotation_data,
                     obj_id=obj_id,
                     origin=origin,
-                    author=author,
+                    author_id=author_id,
                     groups=groups,
                 )
                 annotations.append(annotation)
@@ -557,7 +589,7 @@ class VizierQueryHandler(BaseHandler):
 
             session.add_all(annotations)
             try:
-                session.commit()
+                await session.commit()
             except IntegrityError:
                 return self.error("Annotation already posted.")
 
@@ -573,8 +605,9 @@ class DatalabQueryHandler(BaseHandler):
     ---
     summary: Add Datalab annotations
     description: |
-        get photo(z) of nearby sources and post them as an annotation
-        based on cross-matches to some catalog (default is LegacySurvey DR8).
+        get photo-z's (or, for DESI catalogs, spectroscopic redshifts) of
+        nearby sources and post them as an annotation based on cross-matches
+        to some catalog (default is LegacySurvey DR10).
     tags:
         - annotations
     parameters:
@@ -592,7 +625,7 @@ class DatalabQueryHandler(BaseHandler):
         description: |
           The name of the catalog key, associated with a catalog cross match,
           from which the photoz data should be retrieved.
-          Default is ls_dr9.
+          Default is ls_dr10.
       - in: query
         name: crossmatchRadius
         required: false
@@ -623,13 +656,13 @@ class DatalabQueryHandler(BaseHandler):
     """
 
     @auth_or_token
-    def post(self, obj_id):
+    async def post(self, obj_id: str):
         data = self.get_json()
 
-        with self.Session() as session:
-            obj = session.scalars(
+        async with self.AsyncSession() as session:
+            obj = await session.scalar(
                 Obj.select(self.current_user).where(Obj.id == obj_id)
-            ).first()
+            )
             if obj is None:
                 return self.error(
                     f'Cannot find source with id "{obj_id}". ', status=403
@@ -638,7 +671,7 @@ class DatalabQueryHandler(BaseHandler):
             group_ids = data.pop("group_ids", None)
 
             if not group_ids:
-                public_group = session.scalar(
+                public_group = await session.scalar(
                     sa.select(Group.id).where(
                         Group.name == cfg["misc.public_group_name"]
                     )
@@ -648,25 +681,37 @@ class DatalabQueryHandler(BaseHandler):
                         f'No group(s) were specified and the public group "{cfg["misc.public_group_name"]}" does not exist.'
                     )
                 group_ids = [public_group]
-            groups = session.scalars(
+            groups_result = await session.scalars(
                 Group.select(self.current_user).where(Group.id.in_(group_ids))
-            ).all()
+            )
+            groups = list(groups_result.unique().all())
 
             if {g.id for g in groups} != set(group_ids):
                 return self.error(
                     f"Cannot find one or more groups with IDs: {group_ids}.", status=403
                 )
 
-            author = self.associated_user_object
+            author_id = self.associated_user_object.id
 
-            catalog = data.pop("catalog", "ls_dr9")
+            catalog = data.pop("catalog", "ls_dr10")
             radius_arcsec = data.pop("crossmatchRadius", 2.0)
             radius_deg = radius_arcsec / 3600.0
 
-            sql_query = f"""SELECT {catalog}.photo_z.ls_id, z_phot_median, z_phot_std, ra, dec, type, z_phot_l95, flux_z from {catalog}.photo_z
-                          INNER JOIN {catalog}.tractor
-                          ON {catalog}.tractor.ls_id = {catalog}.photo_z.ls_id
-                          where 't' = Q3C_RADIAL_QUERY(ra, dec, {obj.ra}, {obj.dec}, {radius_deg})"""
+            # DESI is a spectroscopic (not photo-z) survey with a different
+            # schema: zpix/photometry keyed by targetid, rather than
+            # photo_z/tractor keyed by ls_id.
+            if catalog.startswith("desi_"):
+                id_col = "targetid"
+                sql_query = f"""SELECT z.targetid, z.z, z.zerr, z.zwarn, z.spectype, p.ra, p.dec, p.flux_z from {catalog}.zpix AS z
+                              INNER JOIN {catalog}.photometry AS p
+                              ON p.targetid = z.targetid
+                              where 't' = Q3C_RADIAL_QUERY(p.ra, p.dec, {obj.ra}, {obj.dec}, {radius_deg})"""
+            else:
+                id_col = "ls_id"
+                sql_query = f"""SELECT {catalog}.photo_z.ls_id, z_phot_median, z_phot_std, ra, dec, type, z_phot_l95, flux_z from {catalog}.photo_z
+                              INNER JOIN {catalog}.tractor
+                              ON {catalog}.tractor.ls_id = {catalog}.photo_z.ls_id
+                              where 't' = Q3C_RADIAL_QUERY(ra, dec, {obj.ra}, {obj.dec}, {radius_deg})"""
             try:
                 query = qc.query(sql=sql_query)
             except qc.queryClientError as e:
@@ -675,15 +720,15 @@ class DatalabQueryHandler(BaseHandler):
             df = pd.read_table(StringIO(query), sep=",")
             annotations = []
             for index, row in df.iterrows():
-                ls_id = row["ls_id"]
-                origin = f"{catalog}-{ls_id}"
-                row.drop(index=["ls_id"], inplace=True)
+                source_id = row[id_col]
+                origin = f"{catalog}-{source_id}"
+                row.drop(index=[id_col], inplace=True)
                 annotation_data = row.to_dict()
                 annotation = Annotation(
                     data=annotation_data,
                     obj_id=obj_id,
                     origin=origin,
-                    author=author,
+                    author_id=author_id,
                     groups=groups,
                 )
                 annotations.append(annotation)
@@ -693,7 +738,7 @@ class DatalabQueryHandler(BaseHandler):
 
             session.add_all(annotations)
             try:
-                session.commit()
+                await session.commit()
             except IntegrityError:
                 return self.error("Annotation already posted.")
 
@@ -706,7 +751,7 @@ class DatalabQueryHandler(BaseHandler):
 
 class PS1QueryHandler(BaseHandler):
     @auth_or_token
-    def post(self, obj_id):
+    async def post(self, obj_id: str):
         """
         ---
         summary: Add PS1 annotations
@@ -764,17 +809,23 @@ class PS1QueryHandler(BaseHandler):
           200:
             content:
               application/json:
-                schema: Success
+                schema:
+                  allOf:
+                    - $ref: '#/components/schemas/Success'
+                    - type: object
+                      properties:
+                        data:
+                          $ref: '#/components/schemas/Annotation'
           400:
             content:
               application/json:
                 schema: Error
         """
 
-        with self.Session() as session:
-            obj = session.scalars(
+        async with self.AsyncSession() as session:
+            obj = await session.scalar(
                 Obj.select(self.current_user).where(Obj.id == obj_id)
-            ).first()
+            )
             if obj is None:
                 return self.error(
                     f'Cannot find source with id "{obj_id}". ', status=403
@@ -782,7 +833,7 @@ class PS1QueryHandler(BaseHandler):
 
             data = self.get_json()
 
-            author = self.associated_user_object
+            author_id = self.associated_user_object.id
 
             catalog = data.pop("catalog", "ps1.dr2")
             radius_arcsec = data.pop("crossmatchRadius", 2.0)
@@ -822,7 +873,11 @@ class PS1QueryHandler(BaseHandler):
             }
 
             url = f"{PS1_URL}/api/v0.1/panstarrs/dr2/mean.csv"
-            r = requests.get(url, params=params)
+            # Offload the blocking external call so it doesn't stall the event
+            # loop (and time-bound it so a hung request can't pin a worker thread).
+            r = await IOLoop.current().run_in_executor(
+                None, lambda: requests.get(url, params=params, timeout=30)
+            )
             not_found_msg = f"No PS1 sources available within {radius_arcsec} arcsec and with at least {min_detections} detections."
             if r.status_code == 200:
                 if len(r.text) == 0:
@@ -853,7 +908,7 @@ class PS1QueryHandler(BaseHandler):
             group_ids = data.pop("group_ids", None)
 
             if not group_ids:
-                public_group = session.scalar(
+                public_group = await session.scalar(
                     sa.select(Group.id).where(
                         Group.name == cfg["misc.public_group_name"]
                     )
@@ -863,9 +918,10 @@ class PS1QueryHandler(BaseHandler):
                         f'No group(s) were specified and the public group "{cfg["misc.public_group_name"]}" does not exist.'
                     )
                 group_ids = [public_group]
-            groups = session.scalars(
+            groups_result = await session.scalars(
                 Group.select(self.current_user).where(Group.id.in_(group_ids))
-            ).all()
+            )
+            groups = list(groups_result.unique().all())
 
             if {g.id for g in groups} != set(group_ids):
                 return self.error(
@@ -897,7 +953,7 @@ class PS1QueryHandler(BaseHandler):
                         data=annotation_data,
                         obj_id=obj_id,
                         origin=origin,
-                        author=author,
+                        author_id=author_id,
                         groups=groups,
                     )
                     annotations.append(annotation)
@@ -907,7 +963,7 @@ class PS1QueryHandler(BaseHandler):
 
             session.add_all(annotations)
             try:
-                session.commit()
+                await session.commit()
             except IntegrityError:
                 return self.error("Annotation already posted.")
 

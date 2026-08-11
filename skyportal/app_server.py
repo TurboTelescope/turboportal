@@ -1,4 +1,5 @@
 import sentry_sdk
+import sqlalchemy as sa
 import tornado.web
 from sentry_sdk.integrations.tornado import TornadoIntegration
 
@@ -18,7 +19,23 @@ from skyportal.handlers.api import (
     AnalysisWebhookHandler,
     AnnotationHandler,
     AssignmentHandler,
+    BrokerAlertsHandler,
+    BrokerAPIsHandler,
+    BrokerConeSearchHandler,
+    BrokerCutoutsHandler,
+    BrokerFilterAttachHandler,
+    BrokerFilterCatalogHandler,
+    BrokerFilterModulesHandler,
+    BrokerFiltersHandler,
+    BrokerFilterTestHandler,
+    BrokerFilterValidateHandler,
+    BrokerHandler,
+    BrokerPhotometryHandler,
+    BrokerSaveHandler,
+    BrokerSurveyPhotometryHandler,
+    BulkDeleteCandidatesHandler,
     BulkDeletePhotometryHandler,
+    BulkSpectraHandler,
     CandidateFilterHandler,
     CandidateHandler,
     CatalogQueryHandler,
@@ -41,6 +58,7 @@ from skyportal.handlers.api import (
     EnumTypesHandler,
     FacilityMessageHandler,
     FilterHandler,
+    FinderChartFacilitiesHandler,
     FollowupAPIsHandler,
     FollowupRequestCommentHandler,
     FollowupRequestHandler,
@@ -51,9 +69,11 @@ from skyportal.handlers.api import (
     GaiaQueryHandler,
     GalaxyASCIIFileHandler,
     GalaxyCatalogHandler,
-    GalaxyGladeHandler,
+    GalaxyNEDHandler,
+    GalaxyRegaladeHandler,
     GcnEventAliasesHandler,
     GcnEventCatalogQueryHandler,
+    GcnEventCrossmatchHandler,
     GcnEventHandler,
     GcnEventInstrumentFieldHandler,
     GcnEventNoticeDownloadHandler,
@@ -88,6 +108,7 @@ from skyportal.handlers.api import (
     LocalizationNoticeHandler,
     LocalizationPropertiesHandler,
     LocalizationTagsHandler,
+    MetricsHandler,
     MMADetectorHandler,
     MMADetectorSpectrumHandler,
     MMADetectorTimeIntervalHandler,
@@ -137,6 +158,7 @@ from skyportal.handlers.api import (
     PhotometryRangeHandler,
     PhotometryRequestHandler,
     PhotometryValidationHandler,
+    PhotStatAggregateHandler,
     PhotStatHandler,
     PhotStatUpdateHandler,
     PS1QueryHandler,
@@ -185,6 +207,7 @@ from skyportal.handlers.api import (
     SyntheticPhotometryHandler,
     SysInfoHandler,
     TaxonomyHandler,
+    TeamHandler,
     TelescopeHandler,
     ThumbnailHandler,
     ThumbnailPathHandler,
@@ -197,6 +220,9 @@ from skyportal.handlers.api import (
     WeatherHandler,
 )
 from skyportal.handlers.api.internal import (
+    AcrossInstrumentsHandler,
+    AcrossJointVisibilityHandler,
+    AltdataInfoHandler,
     AnnotationsInfoHandler,
     BulkNotificationHandler,
     DBInfoHandler,
@@ -227,7 +253,8 @@ from skyportal.handlers.public import (
 )
 
 from . import model_util, openapi
-from .models import init_db
+from .models import DBSession, init_db
+from .utils.observability import setup_observability
 
 log = make_log("app_server")
 
@@ -261,9 +288,29 @@ skyportal_handlers = [
         AnalysisProductsHandler,
     ),
     (r"/api/assignment(/.*)?", AssignmentHandler),
+    (r"/api/brokers/([0-9]+)/filter/test", BrokerFilterTestHandler),
+    (
+        r"/api/brokers/([0-9]+)/filters/([0-9]+)/validate",
+        BrokerFilterValidateHandler,
+    ),
+    (r"/api/brokers/([0-9]+)/filter_modules(?:/([^/]+))?", BrokerFilterModulesHandler),
+    (r"/api/brokers/filters", BrokerFilterCatalogHandler),
+    (r"/api/brokers/filters/([0-9]+)/attach", BrokerFilterAttachHandler),
+    (r"/api/brokers/([0-9]+)/filters(?:/([0-9]+))?", BrokerFiltersHandler),
+    (r"/api/brokers/([0-9]+)/alerts/([^/]+)/cutouts", BrokerCutoutsHandler),
+    (r"/api/brokers/([0-9]+)/cone_search", BrokerConeSearchHandler),
+    (r"/api/brokers/([0-9]+)/alerts/([^/]+)/photometry", BrokerPhotometryHandler),
+    # Survey-addressed passthrough for the source-page lightcurve (resolves the
+    # broker server-side); "photometry" is non-numeric so it never shadows the
+    # numeric /api/brokers/{id} routes.
+    (r"/api/brokers/photometry/([^/]+)", BrokerSurveyPhotometryHandler),
+    (r"/api/brokers/([0-9]+)/alerts/([^/]+)/save", BrokerSaveHandler),
+    (r"/api/brokers/([0-9]+)/alerts(?:/(.+))?", BrokerAlertsHandler),
+    (r"/api/brokers(?:/([0-9]+))?", BrokerHandler),
     (r"/api/candidates_filter", CandidateFilterHandler),
     (r"/api/candidates/scan_reports/([0-9]+)/items(/[0-9]+)?", ScanReportItemHandler),
     (r"/api/candidates/scan_reports", ScanReportHandler),
+    (r"/api/candidates/bulk_delete", BulkDeleteCandidatesHandler),
     (r"/api/candidates(/[0-9A-Za-z-_]+)/([0-9]+)", CandidateHandler),
     (r"/api/candidates(/.*)?", CandidateHandler),
     (r"/api/catalogs/swift_lsxps", SwiftLSXPSQueryHandler),
@@ -303,7 +350,8 @@ skyportal_handlers = [
     ),
     (r"/api/followup_request(/.*)?", FollowupRequestHandler),
     (r"/api/photometry_request(/.*)", PhotometryRequestHandler),
-    (r"/api/galaxy_catalog/glade", GalaxyGladeHandler),
+    (r"/api/galaxy_catalog/regalade", GalaxyRegaladeHandler),
+    (r"/api/galaxy_catalog/ned", GalaxyNEDHandler),
     (r"/api/galaxy_catalog/ascii", GalaxyASCIIFileHandler),
     (r"/api/galaxy_catalog(/[0-9A-Za-z-_\.\+]+)?", GalaxyCatalogHandler),
     (
@@ -351,6 +399,7 @@ skyportal_handlers = [
     (r"/api/gcn_event(/.*)/alias", GcnEventAliasesHandler),
     (r"/api/gcn_event(/.*)/triggered(/.*)?", GcnEventTriggerHandler),
     (r"/api/gcn_event(/.*)/gracedb", GcnGraceDBHandler),
+    (r"/api/gcn_event/(.*)/crossmatch", GcnEventCrossmatchHandler),
     (r"/api/gcn_event/(.*)/report(/.*)?", GcnReportHandler),
     (r"/api/gcn_event(/.*)/tach", GcnTachHandler),
     (r"/api/gcn_event/(.*)/summary(/.*)?", GcnSummaryHandler),
@@ -378,6 +427,7 @@ skyportal_handlers = [
     (r"/api/comment_attachment", CommentAttachmentUpdateHandler),
     (r"/api/sources/([0-9A-Za-z-_\.\+]+)/phot_stat", PhotStatHandler),
     (r"/api/phot_stats", PhotStatUpdateHandler),
+    (r"/api/phot_stats/aggregate", PhotStatAggregateHandler),
     (r"/api/localization/tags", LocalizationTagsHandler),
     (r"/api/localization/properties", LocalizationPropertiesHandler),
     (r"/api/localization(/.*)/name(/.*)/download", LocalizationDownloadHandler),
@@ -478,6 +528,7 @@ skyportal_handlers = [
     (r"/api/sources(/[0-9A-Za-z-_\.\+]+)/host", ObjHostHandler),
     (r"/api/sources(/[0-9A-Za-z-_\.\+]+)/offsets", SourceOffsetsHandler),
     (r"/api/sources(/[0-9A-Za-z-_\.\+]+)/finder", SourceFinderHandler),
+    (r"/api/finder_chart/facilities", FinderChartFacilitiesHandler),
     (r"/api/sources(/[0-9A-Za-z-_\.\+]+)/classifications", ObjClassificationHandler),
     (r"/api/sources(/[0-9A-Za-z-_\.\+]+)/groups", ObjGroupsHandler),
     (r"/api/sources(/[0-9A-Za-z-_\.\+]+)/labels", SourceLabelsHandler),
@@ -522,6 +573,7 @@ skyportal_handlers = [
     (r"/api/source_groups(/.*)?", SourceGroupsHandler),
     (r"/api/spatial_catalog/ascii", SpatialCatalogASCIIFileHandler),
     (r"/api/spatial_catalog(/[0-9A-Za-z-_\.\+]+)?", SpatialCatalogHandler),
+    (r"/api/spectra/bulk", BulkSpectraHandler),
     (r"/api/spectra(/[0-9]+)?", SpectrumHandler),
     (r"/api/spectra/parse/ascii", SpectrumASCIIFileParser),
     (r"/api/spectra/ascii(/[0-9]+)?", SpectrumASCIIFileHandler),
@@ -547,6 +599,7 @@ skyportal_handlers = [
     (r"/api/sysinfo", SysInfoHandler),
     (r"/api/config", ConfigHandler),
     (r"/api/taxonomy(/.*)?", TaxonomyHandler),
+    (r"/api/teams(/[0-9]+)?", TeamHandler),
     (r"/api/telescope(/[0-9]+)?", TelescopeHandler),
     (r"/api/thumbnail(/[0-9]+)?", ThumbnailHandler),
     (r"/api/thumbnailPath", ThumbnailPathHandler),
@@ -590,6 +643,7 @@ skyportal_handlers = [
     (r"/api/internal/source_counts(/.*)?", SourceCountHandler),
     (r"/api/internal/source_savers(/.*)?", SourceSaverHandler),
     (r"/api/internal/instrument_forms", RoboticInstrumentsHandler),
+    (r"/api/internal/broker_apis", BrokerAPIsHandler),
     (r"/api/internal/followup_apis", FollowupAPIsHandler),
     (r"/api/internal/standards", StandardsHandler),
     (r"/api/internal/wavelengths(/.*)?", FilterWavelengthHandler),
@@ -603,8 +657,14 @@ skyportal_handlers = [
         PlotHoursBelowAirmassHandler,
     ),
     (r"/api/internal/ephemeris(/[0-9]+)?", EphemerisHandler),
+    (r"/api/internal/across/instruments", AcrossInstrumentsHandler),
+    (
+        r"/api/internal/across/joint_visibility/(.*)",
+        AcrossJointVisibilityHandler,
+    ),
     (r"/api/internal/log(/.*)?", LogHandler),
     (r"/api/internal/recent_sources(/.*)?", RecentSourcesHandler),
+    (r"/api/internal/altdata_info", AltdataInfoHandler),
     (r"/api/internal/annotations_info", AnnotationsInfoHandler),
     (r"/api/internal/notifications(/[0-9]+)?", NotificationHandler),
     (r"/api/internal/notifications/all", BulkNotificationHandler),
@@ -623,7 +683,7 @@ skyportal_handlers = [
     ),
     (r"/public/releases(?:/)?([0-9A-Za-z-_\.\+]+)?", ReleaseHandler),
     (r"/public/reports/(gcn)(/[0-9]+)?(/.*)?", ReportHandler),
-    (r"/public/finding_charts/(.*)", CachedSourceFinderHandler),
+    (r"/public/finding_charts(?:/)?(.*)?", CachedSourceFinderHandler),
     (r"/public/.*", InvalidEndpointHandler),
     # Debug and logout pages.
     (r"/become_user(/.*)?", BecomeUserHandler),
@@ -664,6 +724,11 @@ def make_app(cfg, baselayer_handlers, baselayer_settings, process=None, env=None
         print("!" * 80)
 
     handlers = baselayer_handlers + skyportal_handlers
+
+    # Opt-in OpenTelemetry instrumentation; exposes Prometheus metrics at
+    # /api/internal/metrics (matched before the /api/.* catch-all) per worker.
+    if setup_observability(cfg):
+        handlers = [(r"/api/internal/metrics", MetricsHandler), *handlers]
 
     settings = baselayer_settings
     settings.update(
@@ -735,6 +800,17 @@ def make_app(cfg, baselayer_handlers, baselayer_settings, process=None, env=None
     # in debug mode.  In production, we leave the tables alone, since
     # migrations might be used.
     create_tables(add=env.debug)
+
+    # create_tables() is a no-op outside debug mode, so an unmigrated database
+    # reaches this point empty and every later step fails on a missing table or
+    # type -- once per worker, on every supervisor restart. Say so instead.
+    if not sa.inspect(DBSession.session_factory.kw["bind"]).has_table("users"):
+        raise RuntimeError(
+            "No tables found in the database. Create the schema first: "
+            "`make db_create_tables` (or `alembic upgrade head` where "
+            "migrations are used), then start the app."
+        )
+
     model_util.refresh_enums()
 
     model_util.setup_permissions()

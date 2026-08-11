@@ -1,12 +1,25 @@
+from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy.orm import selectinload
+
 from baselayer.app.access import auth_or_token, permissions
 
 from ...models import Role, User, UserRole
 from ..base import BaseHandler
 
 
+class UserRolePostBody(BaseModel):
+    """Request body for granting roles to a user."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    roleIds: list[str] = Field(
+        description="Array of Role IDs (strings) to be granted to user"
+    )
+
+
 class RoleHandler(BaseHandler):
     @auth_or_token
-    def get(self):
+    async def get(self):
         """
         ---
         summary: Get all roles
@@ -28,17 +41,24 @@ class RoleHandler(BaseHandler):
                             $ref: '#/components/schemas/Role'
                           description: List of all Roles.
         """
-        roles = Role.query.all()
-        for i, role in enumerate(roles):
-            roles[i] = role.to_dict()
-            roles[i]["acls"] = [acl.id for acl in role.acls]
-        self.verify_and_commit()
-        return self.success(data=roles)
+        async with self.AsyncSession() as session:
+            result = await session.scalars(
+                Role.select(self.associated_user_object).options(
+                    selectinload(Role.acls)
+                )
+            )
+            roles = result.all()
+            output = []
+            for role in roles:
+                role_dict = role.to_dict()
+                role_dict["acls"] = [acl.id for acl in role.acls]
+                output.append(role_dict)
+            return self.success(data=output)
 
 
 class UserRoleHandler(BaseHandler):
     @permissions(["Manage users"])
-    def post(self, user_id, *ignored_args):
+    async def post(self, user_id: int, *ignored_args, body: UserRolePostBody = None):
         """
         ---
         summary: Grant new Role(s) to a user
@@ -51,45 +71,46 @@ class UserRoleHandler(BaseHandler):
             required: true
             schema:
               type: integer
-        requestBody:
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  roleIds:
-                    type: array
-                    items:
-                      type: string
-                    description: Array of Role IDs (strings) to be granted to user
-                required:
-                  - roleIds
         responses:
           200:
             content:
               application/json:
                 schema: Success
         """
-        data = self.get_json()
-        new_role_ids = data.get("roleIds")
-        if new_role_ids is None:
-            return self.error("Missing required parameter roleIds")
-        if (not isinstance(new_role_ids, list | tuple)) or (
-            not all(Role.query.get(role_id) is not None for role_id in new_role_ids)
-        ):
-            return self.error(
-                "Improperly formatted parameter roleIds; must be an array of strings."
+        body = self.parse_body(UserRolePostBody)
+        new_role_ids = body.roleIds
+
+        async with self.AsyncSession() as session:
+            user = await session.scalar(
+                User.select(self.associated_user_object)
+                .options(selectinload(User.roles))
+                .where(User.id == user_id)
             )
-        user = User.query.get(user_id)
-        if user is None:
-            return self.error("Invalid user_id parameter.")
-        new_roles = Role.query.filter(Role.id.in_(new_role_ids)).all()
-        user.roles = list(set(user.roles).union(set(new_roles)))
-        self.verify_and_commit()
-        return self.success()
+            if user is None:
+                return self.error("Invalid user_id parameter.")
+            # if some of the requested role IDs are invalid, return an error listing the invalid IDs
+            valid_ids_result = await session.scalars(
+                Role.select(self.associated_user_object, columns=[Role.id]).where(
+                    Role.id.in_(new_role_ids)
+                )
+            )
+            valid_role_ids = set(valid_ids_result.all())
+            invalid_role_ids = set(new_role_ids) - valid_role_ids
+            if invalid_role_ids:
+                return self.error(f"Invalid role_id(s): {', '.join(invalid_role_ids)}")
+            new_roles_result = await session.scalars(
+                Role.select(self.associated_user_object).where(
+                    Role.id.in_(new_role_ids)
+                )
+            )
+            new_roles = new_roles_result.all()
+            user.roles = list(set(user.roles).union(set(new_roles)))
+            await session.commit()
+            return self.success()
 
     @permissions(["Manage users"])
-    def delete(self, user_id, role_id):
+    async def delete(self, user_id: int, role_id: str):
+        # Path arg comes in as a string; the column is integer.
         """
         ---
         summary: Delete user role
@@ -113,16 +134,19 @@ class UserRoleHandler(BaseHandler):
               application/json:
                 schema: Success
         """
-        user = User.query.get(user_id)
-        if user is None:
-            return self.error("Invalid user_id")
-        role = Role.query.get(role_id)
-        if role is None:
-            return self.error("Invalid role_id")
-        (
-            UserRole.query.filter(UserRole.user_id == user_id)
-            .filter(UserRole.role_id == role_id)
-            .delete()
-        )
-        self.verify_and_commit()
-        return self.success()
+        async with self.AsyncSession() as session:
+            user = await session.scalar(
+                User.select(self.associated_user_object).where(User.id == user_id)
+            )
+            if user is None:
+                return self.error("Invalid user_id parameter.")
+            user_role = await session.scalar(
+                UserRole.select(self.associated_user_object).where(
+                    UserRole.user_id == user_id, UserRole.role_id == role_id
+                )
+            )
+            if user_role is None:
+                return self.error("User does not have specified role.")
+            await session.delete(user_role)
+            await session.commit()
+            return self.success()
