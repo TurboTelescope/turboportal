@@ -1,0 +1,120 @@
+# Git-tracked groups/users/stream for the TurboPortal instance, loaded with
+#   tools/data_loader.py data/turbo_seed.yaml --config=...
+# Usernames mirror the values SkyPortal derives from Google OAuth (same client +
+# normalization as before), so they match on first login. Telescopes/instruments/
+# taxonomy come from data/db_seed.yaml via `make load_seed_data`. The Sitewide
+# Group is auto-created by SkyPortal and is intentionally not seeded here.
+
+groups:
+  - name: TURBO New Mexico
+    =id: turbo_nm
+  - name: TURBO Crete
+    =id: turbo_crete
+  - name: TURBO Prototype
+    =id: turbo_proto
+  - name: Transient Candidates
+    =id: g_tc
+  - name: False Positives
+    =id: g_fp
+  - name: Asteroids
+    =id: g_ast
+  - name: Variable Stars
+    =id: g_vs
+  - name: Possible AGN
+    =id: g_agn
+
+streams:
+  - name: TURBO
+    =id: turbo_stream
+
+user:
+  - username: borde206
+    roles: [Super admin]
+    =id: borde206
+  - username: ethan
+    roles: [Super admin]
+    =id: ethan
+  - username: kuma0428
+    roles: [Super admin]
+    =id: kuma0428
+  - username: mdanders
+    roles: [Super admin]
+    =id: mdanders
+  - username: plkelly
+    roles: [Super admin]
+    =id: plkelly
+  - username: borderbenja
+    roles: [Full user]
+    =id: borderbenja
+  - username: ethangramowski
+    roles: [Full user]
+    =id: ethangramowski
+  - username: gill0590
+    roles: [Full user]
+    =id: gill0590
+  - username: riggs155
+    roles: [Full user]
+    =id: riggs155
+  - username: selne032
+    roles: [Full user]
+    =id: selne032
+  - username: stafk016
+    roles: [Full user]
+    =id: stafk016
+
+groups/=turbo_nm/users:
+  - {userID: =borde206, admin: true}
+  - {userID: =ethan, admin: true}
+  - {userID: =ethangramowski, admin: true}
+  - {userID: =kuma0428, admin: true}
+  - {userID: =mdanders, admin: true}
+  - {userID: =plkelly, admin: true}
+  - {userID: =riggs155, admin: true}
+  - {userID: =borderbenja, admin: false}
+  - {userID: =gill0590, admin: false}
+  - {userID: =selne032, admin: false}
+  - {userID: =stafk016, admin: false}
+
+groups/=turbo_crete/users:
+  - {userID: =borde206, admin: true}
+  - {userID: =ethan, admin: true}
+  - {userID: =ethangramowski, admin: true}
+  - {userID: =kuma0428, admin: true}
+  - {userID: =mdanders, admin: true}
+  - {userID: =plkelly, admin: true}
+  - {userID: =riggs155, admin: true}
+  - {userID: =borderbenja, admin: false}
+  - {userID: =gill0590, admin: false}
+  - {userID: =selne032, admin: false}
+  - {userID: =stafk016, admin: false}
+
+groups/=turbo_proto/users:
+  - {userID: =borde206, admin: true}
+  - {userID: =ethan, admin: true}
+  - {userID: =ethangramowski, admin: true}
+  - {userID: =kuma0428, admin: true}
+  - {userID: =mdanders, admin: true}
+  - {userID: =plkelly, admin: true}
+  - {userID: =riggs155, admin: true}
+  - {userID: =borderbenja, admin: false}
+  - {userID: =gill0590, admin: false}
+  - {userID: =selne032, admin: false}
+  - {userID: =stafk016, admin: false}
+
+groups/=g_tc/users: &all_users
+  - {userID: =borde206, admin: false}
+  - {userID: =ethan, admin: false}
+  - {userID: =ethangramowski, admin: false}
+  - {userID: =kuma0428, admin: false}
+  - {userID: =mdanders, admin: false}
+  - {userID: =plkelly, admin: false}
+  - {userID: =riggs155, admin: false}
+  - {userID: =borderbenja, admin: false}
+  - {userID: =gill0590, admin: false}
+  - {userID: =selne032, admin: false}
+  - {userID: =stafk016, admin: false}
+
+groups/=g_fp/users: *all_users
+groups/=g_ast/users: *all_users
+groups/=g_vs/users: *all_users
+groups/=g_agn/users: *all_users

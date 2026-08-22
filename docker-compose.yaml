@@ -2,17 +2,16 @@ services:
   web:
     build: .
     ports:
-      - "8000:5000"
-      - "8001:5001"
+      - "127.0.0.1:8000:5000"
+      - "127.0.0.1:8001:5001"
     volumes:
-      # allow the data files to be mounted across containers
-      # if need be with the :z flag
-      # cf. https://stackoverflow.com/a/35222815
-      - thumbnails:/skyportal/static/thumbnails:z
-      - persistentdata:/skyportal/persistentdata:z
+      - /mnt/rds/turboportal/thumbnails:/skyportal/static/thumbnails
+      - /mnt/rds/turboportal/persistentdata:/skyportal/persistentdata
       - ./config/docker.yaml:/etc/skyportal/docker.yaml
     environment:
       - FLAGS=--config=/etc/skyportal/docker.yaml
+    security_opt:
+      - label:disable
     depends_on:
       db-init:
         condition: service_completed_successfully
@@ -36,7 +35,9 @@ services:
       POSTGRES_DB: skyportal
       PGDATA: /var/lib/postgresql/data/pgdata
     volumes:
-      - ./data/dbdata:/var/lib/postgresql/data:z
+      - /mnt/rds/turboportal/db:/var/lib/postgresql/data
+    security_opt:
+      - label:disable
     restart: on-failure:3
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U skyportal -d skyportal"]
@@ -45,12 +46,9 @@ services:
       retries: 10
 
   # Valkey (redis-protocol) server backing skyportal.utils.valkey_cache.
-  # ALLOW_EMPTY_PASSWORD is for local development only. Reachable as host
-  # "valkey" on the compose network; deliberately not published to the host.
   valkey:
     image: valkey/valkey:9.1.0
     environment:
-      # ALLOW_EMPTY_PASSWORD is recommended only for development.
       - ALLOW_EMPTY_PASSWORD=yes
       - VALKEY_DISABLE_COMMANDS=FLUSHDB,FLUSHALL
     volumes:
@@ -63,7 +61,4 @@ services:
       retries: 3
 
 volumes:
-  dbdata:
   valkeydata:
-  thumbnails:
-  persistentdata:
