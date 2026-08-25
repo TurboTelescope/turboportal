@@ -8,6 +8,7 @@ services:
       - /mnt/rds/turboportal/thumbnails:/skyportal/static/thumbnails
       - /mnt/rds/turboportal/persistentdata:/skyportal/persistentdata
       - ./config/docker.yaml:/etc/skyportal/docker.yaml
+      - ./data:/skyportal/data
     environment:
       - FLAGS=--config=/etc/skyportal/docker.yaml
     security_opt:
@@ -38,7 +39,7 @@ services:
       - /mnt/rds/turboportal/db:/var/lib/postgresql/data
     security_opt:
       - label:disable
-    restart: on-failure:3
+    restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U skyportal -d skyportal"]
       interval: 5s
@@ -53,7 +54,7 @@ services:
       - VALKEY_DISABLE_COMMANDS=FLUSHDB,FLUSHALL
     volumes:
       - valkeydata:/data
-    restart: on-failure:3
+    restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
