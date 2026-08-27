@@ -1,6 +1,7 @@
 services:
   web:
     build: .
+    restart: unless-stopped 
     ports:
       - "127.0.0.1:8000:5000"
       - "127.0.0.1:8001:5001"
@@ -16,6 +17,7 @@ services:
     depends_on:
       db-init:
         condition: service_completed_successfully
+    sysctls: ["net.ipv4.ip_unprivileged_port_start=443"]
 
   # run_production does not create tables, so initialize the schema before the
   # app starts. create_all() is checkfirst=True, so this is a safe no-op against

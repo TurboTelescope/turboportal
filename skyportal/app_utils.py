@@ -4,12 +4,6 @@ _, cfg = load_env()
 
 
 def get_app_base_url():
-    ports_to_ignore = {True: 443, False: 80}  # True/False <-> server.ssl=True/False
-    return f"{'https' if cfg['server.ssl'] else 'http'}://{cfg['server.host']}" + (
-        f":{cfg['server.port']}"
-        if (
-            cfg["server.port"] is not None
-            and cfg["server.port"] != ports_to_ignore[cfg["server.ssl"]]
-        )
-        else ""
-    )
+    # This instance runs behind a reverse proxy on the standard port (443/80),
+    # so user-facing and callback URLs must not carry the internal server.port.
+    return f"{'https' if cfg['server.ssl'] else 'http'}://{cfg['server.host']}"
