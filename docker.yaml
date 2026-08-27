@@ -7,7 +7,7 @@ database:
 
 server:
     port: 5000 # Internal port
-
+    whitelisted_ips: ["172.20.0.0/16"]
 ports:
     app: 5000 # External port
 
