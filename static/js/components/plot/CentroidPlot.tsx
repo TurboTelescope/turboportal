@@ -173,7 +173,7 @@ const prepareData = (
       !Number.isNaN(p.magerr) &&
       !Number.isNaN(p.ra) &&
       !Number.isNaN(p.dec) &&
-      !["fp", "alert_fp"].includes(p.origin),
+      !["fp", "alert_fp", "TURBO_forced"].includes(p.origin),
   );
   if (points.length === 0) {
     return {
