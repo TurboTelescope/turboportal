@@ -23,6 +23,7 @@ from .tarot import TAROTAPI
 from .tess import TESSAPI
 from .trt import TRTAPI
 from .ttt import TTTAPI
+from .turbo import TURBOAPI
 from .winter import SPRINGAPI, WINTERAPI
 from .ztf import ZTFAPI, ZTFMMAAPI
 from .rubin import RUBINMMAAPI
@@ -68,6 +69,7 @@ APIS = (
     TTTAPI,
     NEWFIRMAPI,
     RUBINMMAAPI,
+    TURBOAPI,
 )
 
 # Listeners, listed in implementation order, to keep matching enum in db stable

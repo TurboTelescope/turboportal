@@ -92,6 +92,12 @@ app:
     host: fallingstar-data.com
     port:
 
+  # Internal TURBO forced-photometry service on migizi (token-authed).
+  turbo:
+    protocol: http
+    host: 134.84.21.39
+    port: 5555
+
   kait:
     protocol: http
     host: herculesii.astro.berkeley.edu
