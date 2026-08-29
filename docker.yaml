@@ -8,6 +8,8 @@ database:
 server:
     port: 5000 # Internal port
     whitelisted_ips: ["172.20.0.0/16"]
+    processes: 8
+    dedicated_frontend_processes: 2
 ports:
     app: 5000 # External port
 
