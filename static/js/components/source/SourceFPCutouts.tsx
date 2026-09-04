@@ -8,8 +8,10 @@ import {
   useDeleteFPCutoutsMutation,
   useFpCutoutsQuery,
 } from "../../ducks/fp_cutouts";
-import { useFetchSourcePhotometryQuery } from "../../ducks/photometry";
-import type { PhotometryPoint } from "../../types/domain";
+import {
+  useFetchSourcePhotometryQuery,
+  type PhotometryPoint,
+} from "../../ducks/photometry";
 
 const FP_ORIGIN = "TURBO_forced";
 
@@ -18,9 +20,12 @@ interface SourceFPCutoutsProps {
   isReadOnly?: boolean;
 }
 
+// Photometry fields beyond id/obj_id come from an index signature, so they are
+// read with bracket access.
 const fmt = (p: PhotometryPoint | undefined) => {
-  if (p?.mag != null) return Number(p.mag).toFixed(2);
-  if (p?.limiting_mag != null) return `>${Number(p.limiting_mag).toFixed(2)}`;
+  if (p?.["mag"] != null) return Number(p["mag"]).toFixed(2);
+  if (p?.["limiting_mag"] != null)
+    return `>${Number(p["limiting_mag"]).toFixed(2)}`;
   return "";
 };
 
@@ -42,7 +47,7 @@ const SourceFPCutouts = ({
   // epoch labels come from the photometry already loaded for this source.
   const byId = new Map<number, PhotometryPoint>(
     (photometry ?? [])
-      .filter((p) => p.origin === FP_ORIGIN)
+      .filter((p) => p["origin"] === FP_ORIGIN)
       .map((p) => [p.id, p]),
   );
 
@@ -60,8 +65,8 @@ const SourceFPCutouts = ({
 
   const sorted = [...cutouts].sort(
     (a, b) =>
-      (byId.get(a.photometry_id ?? -1)?.mjd ?? 0) -
-      (byId.get(b.photometry_id ?? -1)?.mjd ?? 0),
+      (byId.get(a.photometry_id ?? -1)?.["mjd"] ?? 0) -
+      (byId.get(b.photometry_id ?? -1)?.["mjd"] ?? 0),
   );
 
   return (
@@ -76,8 +81,8 @@ const SourceFPCutouts = ({
       >
         {sorted.map((c) => {
           const p = byId.get(c.photometry_id ?? -1);
-          const mjd = p?.mjd != null ? Number(p.mjd).toFixed(4) : "?";
-          const band = p?.filter ?? "";
+          const mjd = p?.["mjd"] != null ? Number(p["mjd"]).toFixed(4) : "?";
+          const band = p?.["filter"] ?? "";
           const mag = fmt(p);
           return (
             <Box key={c.id} sx={{ textAlign: "center" }}>
