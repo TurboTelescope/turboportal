@@ -183,6 +183,7 @@ from skyportal.handlers.api import (
     SourceCopyPhotometryHandler,
     SourceExistsHandler,
     SourceFinderHandler,
+    SourceFPCutoutHandler,
     SourceGroupsHandler,
     SourceHandler,
     SourceLabelsHandler,
@@ -602,6 +603,10 @@ skyportal_handlers = [
     (r"/api/teams(/[0-9]+)?", TeamHandler),
     (r"/api/telescope(/[0-9]+)?", TelescopeHandler),
     (r"/api/thumbnail(/[0-9]+)?", ThumbnailHandler),
+    (
+        r"/api/sources/([0-9A-Za-z-_\.\+]+)/fp_cutouts",
+        SourceFPCutoutHandler,
+    ),
     (r"/api/thumbnailPath", ThumbnailPathHandler),
     # Sharing service endpoints
     (

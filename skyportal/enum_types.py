@@ -77,6 +77,7 @@ THUMBNAIL_TYPES = (
     "new_gz",
     "ref_gz",
     "sub_gz",
+    "fp_dif",
 )
 INSTRUMENT_TYPES = ("imager", "spectrograph", "imaging spectrograph")
 MMA_DETECTOR_TYPES = ("gravitational-wave", "neutrino", "gamma-ray-burst")
