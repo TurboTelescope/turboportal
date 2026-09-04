@@ -1465,7 +1465,11 @@ const SourceContent = ({ source }: SourceContentProps) => {
             order: { xs: 5, md: 7 },
           }}
         >
-          <Accordion disableGutters className={classes.flexColumn}>
+          <Accordion
+            defaultExpanded
+            disableGutters
+            className={classes.flexColumn}
+          >
             <AccordionSummary
               expandIcon={<ExpandMoreIcon />}
               aria-controls="fp-cutouts-content"
