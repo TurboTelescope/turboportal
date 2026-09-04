@@ -62,6 +62,19 @@ class Thumbnail(Base):
         nullable=False,
         doc="ID of the thumbnail's obj.",
     )
+    photometry_id = sa.Column(
+        sa.ForeignKey("photometry.id", ondelete="CASCADE"),
+        index=True,
+        nullable=True,
+        doc="Photometry point this thumbnail belongs to, for per-epoch "
+        "cutouts. NULL for object-level thumbnails.",
+    )
+    photometry = relationship(
+        "Photometry",
+        back_populates="thumbnails",
+        uselist=False,
+        doc="The Thumbnail's Photometry point, if it is per-epoch.",
+    )
     is_grayscale = sa.Column(
         sa.Boolean(),
         nullable=True,

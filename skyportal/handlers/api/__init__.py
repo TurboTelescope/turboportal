@@ -238,7 +238,11 @@ from .tag import ObjTagHandler, ObjTagOptionHandler
 from .taxonomy import TaxonomyHandler
 from .team import TeamHandler
 from .telescope import TelescopeHandler
-from .thumbnail import ThumbnailHandler, ThumbnailPathHandler
+from .thumbnail import (
+    SourceFPCutoutHandler,
+    ThumbnailHandler,
+    ThumbnailPathHandler,
+)
 from .tns.obj_tns import ObjTNSHandler
 from .unsourced_finder import UnsourcedFinderHandler
 from .user import (

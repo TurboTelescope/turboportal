@@ -159,6 +159,13 @@ class Photometry(conesearch_alchemy.Point, Base):
         doc="ID of the Photometry's Obj.",
     )
     obj = relationship("Obj", back_populates="photometry", doc="The Photometry's Obj.")
+    thumbnails = relationship(
+        "Thumbnail",
+        back_populates="photometry",
+        cascade="save-update, merge, refresh-expire, expunge",
+        passive_deletes=True,
+        doc="Per-epoch cutouts for this Photometry point.",
+    )
     groups = relationship(
         "Group",
         secondary="group_photometry",

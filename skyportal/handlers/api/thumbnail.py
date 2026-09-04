@@ -18,6 +18,8 @@ from ..base import BaseHandler
 
 log = make_log("api/thumbnail")
 
+FP_CUTOUT_TYPE = "fp_dif"
+
 
 class ThumbnailPostBody(BaseModel):
     """Request body for uploading a thumbnail."""
@@ -31,7 +33,12 @@ class ThumbnailPostBody(BaseModel):
     )
     ttype: str = Field(
         description="Thumbnail type. Must be one of 'new', 'ref', 'sub', "
-        "'sdss', 'dr8', 'new_gz', 'ref_gz', 'sub_gz'"
+        "'sdss', 'dr8', 'new_gz', 'ref_gz', 'sub_gz', 'fp_dif'"
+    )
+    photometry_id: int | None = Field(
+        default=None,
+        description="Attach to this photometry point instead of to the object "
+        "as a whole, for a per-epoch cutout.",
     )
 
 
@@ -89,8 +96,14 @@ async def post_thumbnail(data, user_id, session):
 
     if os.path.abspath(basedir).endswith("skyportal/skyportal"):
         basedir = basedir / ".."
+    # Per-epoch cutouts share an obj_id and ttype, so the photometry id has to
+    # be in the name or each one overwrites the last.
+    phot_id = data.get("photometry_id")
+    stem = f"{data['obj_id']}_{data['ttype']}"
+    if phot_id is not None:
+        stem = f"{stem}_{phot_id}"
     file_uri = os.path.abspath(
-        basedir / f"static/thumbnails/{subfolders}/{data['obj_id']}_{data['ttype']}.png"
+        basedir / f"static/thumbnails/{subfolders}/{stem}.png"
     )
     if not os.path.exists(os.path.dirname(file_uri)):
         Path(os.path.dirname(file_uri)).mkdir(parents=True)
@@ -113,7 +126,8 @@ async def post_thumbnail(data, user_id, session):
             obj_id=data["obj_id"],
             type=data["ttype"],
             file_uri=file_uri,
-            public_url=f"/static/thumbnails/{subfolders}/{data['obj_id']}_{data['ttype']}.png",
+            public_url=f"/static/thumbnails/{subfolders}/{stem}.png",
+            photometry_id=phot_id,
         )
         with open(file_uri, "wb") as f:
             f.write(file_bytes)
@@ -261,6 +275,97 @@ class ThumbnailHandler(BaseHandler):
             await session.commit()
 
             return self.success()
+
+
+class SourceFPCutoutHandler(BaseHandler):
+    """Per-epoch forced-photometry cutouts for one source, as a set."""
+
+    @auth_or_token
+    async def get(self, obj_id: str):
+        """
+        ---
+        summary: List a source's forced-photometry cutouts
+        description: Forced-photometry DIF cutouts for a source, keyed by the
+          photometry point each one belongs to.
+        tags:
+          - thumbnails
+        parameters:
+          - in: path
+            name: obj_id
+            required: true
+            schema:
+              type: string
+        responses:
+          200:
+            content:
+              application/json:
+                schema: Success
+        """
+        async with self.AsyncSession() as session:
+            thumbs = (
+                (
+                    await session.scalars(
+                        Thumbnail.select(session.user_or_token).where(
+                            Thumbnail.obj_id == obj_id,
+                            Thumbnail.type == FP_CUTOUT_TYPE,
+                        )
+                    )
+                )
+                .unique()
+                .all()
+            )
+            return self.success(
+                data=[
+                    {
+                        "id": t.id,
+                        "photometry_id": t.photometry_id,
+                        "public_url": t.public_url,
+                    }
+                    for t in thumbs
+                ]
+            )
+
+    @permissions(["Manage sources"])
+    async def delete(self, obj_id: str):
+        """
+        ---
+        summary: Delete a source's forced-photometry cutouts
+        description: Delete every forced-photometry DIF cutout for a source.
+        tags:
+          - thumbnails
+        parameters:
+          - in: path
+            name: obj_id
+            required: true
+            schema:
+              type: string
+        responses:
+          200:
+            content:
+              application/json:
+                schema: Success
+        """
+        async with self.AsyncSession() as session:
+            thumbs = (
+                (
+                    await session.scalars(
+                        Thumbnail.select(
+                            session.user_or_token, mode="delete"
+                        ).where(
+                            Thumbnail.obj_id == obj_id,
+                            Thumbnail.type == FP_CUTOUT_TYPE,
+                        )
+                    )
+                )
+                .unique()
+                .all()
+            )
+            # ORM deletes so the after_delete listener removes each PNG; a bulk
+            # DELETE would leave the files behind.
+            for t in thumbs:
+                await session.delete(t)
+            await session.commit()
+            return self.success(data={"deleted": len(thumbs)})
 
 
 class ThumbnailPathHandler(BaseHandler):
