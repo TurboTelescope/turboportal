@@ -9,7 +9,11 @@ env, cfg = load_env()
 
 REQUEST_TIMEOUT_SECONDS = cfg["health_monitor.request_timeout_seconds"]
 
-HOST = f"{cfg['server.protocol']}://{cfg['server.host']}" + (
+# Every consumer of HOST (the readiness probe below, recurring_apis) is the
+# app calling itself from inside its own container -- server.host/protocol
+# are the public-facing values (reverse proxy, TLS) and are unreachable from
+# in here, so this is intentionally hardcoded rather than reusing them.
+HOST = "http://localhost" + (
     f":{cfg['server.port']}" if cfg["server.port"] not in [80, 443] else ""
 )
 
