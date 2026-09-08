@@ -55,6 +55,20 @@ TNS_INSTRUMENT_IDS = {
     "sprat": 156,
     "wifes": 115,
     "ztf": 196,
+    "t1s1i": 309,
+    "t1s1o": 309,
+    "t1s2i": 309,
+    "t1s2o": 309,
+    "t2s1i": 309,
+    "t2s1o": 309,
+    "t2s2i": 309,
+    "t2s2o": 309,
+    "t3s1i": 309,
+    "t3s1o": 309,
+    "t3s2i": 309,
+    "t3s2o": 309,
+    "turbo nm stack": 309,
+    "turbo forced": 309,
 }
 
 SNCOSMO_TO_TNSFILTER = {
