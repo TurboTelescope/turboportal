@@ -121,6 +121,10 @@ SURVEYS = {
         "discovery_data_source_id": 165,
         "regex": r"LSST-P-DO-\d+$",  # LSST-P-DO- + diaObjectId (int64)
     },
+    "TURBO": {
+        "discovery_data_source_id": 208,  # same as our TNS reporting group id
+        "regex": r"TURBO\d{2}[a-z]{7}$",  # TURBO + 2 digits + 7 lowercase characters
+    },
 }
 
 
@@ -150,6 +154,8 @@ def get_tns_object_id_and_data_source_id(obj_id, photometry):
         survey = SURVEYS["ZTF"]
     elif re.match(SURVEYS["DECAM"]["regex"], obj_id):
         survey = SURVEYS["DECAM"]
+    elif re.match(SURVEYS["TURBO"]["regex"], obj_id):
+        survey = SURVEYS["TURBO"]
     else:  # Accept various input formats for Rubin/LSST object IDs and normalize to the TNS-friendly format
         survey = SURVEYS["LSST"]
 
