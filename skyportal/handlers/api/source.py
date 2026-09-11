@@ -2509,6 +2509,13 @@ class SourceHandler(BaseHandler):
         """
         data = self.get_json()
         data["id"] = obj_id
+        # TURBO: our own pipeline owns these positions and refines them with
+        # every redetection, so a survey that posts its objects as candidates
+        # must still be able to correct them. Absent the flag the upstream
+        # guard below is unchanged.
+        allow_candidate_move = bool(
+            data.pop("allow_candidate_position_update", False)
+        )
 
         async with self.AsyncSession() as session:
             updated_coordinates = False
@@ -2517,7 +2524,7 @@ class SourceHandler(BaseHandler):
                     sa.select(Candidate).where(Candidate.obj_id == obj_id)
                 )
                 existing_candidates = existing_candidates_result.all()
-                if len(existing_candidates) > 0:
+                if len(existing_candidates) > 0 and not allow_candidate_move:
                     return self.error(
                         "Cannot update the position of an object with candidates/alerts"
                     )
