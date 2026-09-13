@@ -2272,21 +2272,23 @@ const PhotometryPlot = ({
             }
           }}
           onClick={(event: any) => {
-            const point = (event?.points || []).find(
+            const spectrumPoint = (event?.points || []).find(
               (p: any) => p?.data?.name === UNSHARED_SPECTRUM,
             );
-            if (!point) return;
-            const spectrumId = Array.isArray(point.customdata)
-              ? point.customdata[0]
-              : point.customdata;
-            setSpectrumToRequest(
-              unsharedSpectra.find(
-                (spectrum) => spectrum.id === spectrumId,
-              ) as SpectrumAvailability,
-            );
+            if (spectrumPoint) {
+              const spectrumId = Array.isArray(spectrumPoint.customdata)
+                ? spectrumPoint.customdata[0]
+                : spectrumPoint.customdata;
+              setSpectrumToRequest(
+                unsharedSpectra.find(
+                  (spectrum) => spectrum.id === spectrumId,
+                ) as SpectrumAvailability,
+              );
+              return;
+            }
+            handlePlotClick(event);
           }}
           onDoubleClick={() => setLayoutReset(true)}
-          onClick={handlePlotClick}
           onInitialized={(_figure: any, graphDiv: any) => {
             graphDivRef.current = graphDiv;
           }}
