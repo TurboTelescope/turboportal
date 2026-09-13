@@ -661,37 +661,16 @@ const PhotometryPlot = ({
     }
   };
 
-  const handlePlotClick = async (event: any) => {
+  const handlePlotClick = (event: any) => {
     const id = event?.points?.[0]?.customdata;
     if (id === null || id === undefined) {
       return;
     }
-    if (cutoutById.has(id) || unavailableCutouts.has(id)) {
-      setCutoutAnchor({
-        id,
-        top: event.event?.clientY ?? 0,
-        left: event.event?.clientX ?? 0,
-      });
-      return;
-    }
-    const statuses = await submitCutoutRequest([id]);
-    const status = statuses?.[String(id)];
-    if (status === "unavailable") {
-      dispatch(
-        showNotification(
-          "No archived frame is recorded for this point",
-          "warning",
-        ),
-      );
-    } else if (status === "ready") {
-      dispatch(showNotification("Cutout ready: click the point to view it"));
-    } else if (status === "pending") {
-      dispatch(
-        showNotification(
-          "Cutout requested: click the point again once it is ready",
-        ),
-      );
-    }
+    setCutoutAnchor({
+      id,
+      top: event.event?.clientY ?? 0,
+      left: event.event?.clientX ?? 0,
+    });
   };
 
   const visibleCutoutIds = () => {
