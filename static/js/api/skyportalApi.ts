@@ -118,7 +118,9 @@ const skyportalBaseQuery: BaseQueryFn<
  */
 export const TAG_TYPES = [
   "SysInfo",
+  "Assistant",
   "Broker",
+  "BrokerCredential",
   "DBStats",
   "DBInfo",
   "Acls",
@@ -131,8 +133,10 @@ export const TAG_TYPES = [
   "Profile",
   "Source",
   "SourcePosition",
+  "SourceInterest",
   "Stream",
   "Telescopes",
+  "TermsOfService",
   "Weather",
   "Allocation",
   "Config",
@@ -145,6 +149,7 @@ export const TAG_TYPES = [
   "SourceCounts",
   "TopSaver",
   "PublicSourcePage",
+  "PublicProfile",
   "DefaultFollowupRequest",
   "DefaultAnalysis",
   "Galaxy",
@@ -154,12 +159,15 @@ export const TAG_TYPES = [
   "Photometry",
   "PhotometryCutouts",
   "RecentGcnEvent",
+  "RecentGcnExtraction",
   "SharingService",
   "SharingServiceSubmission",
   "PublicRelease",
   "AnalysisService",
   "DefaultGcnTag",
   "Ephemeris",
+  "GcnAssociationRules",
+  "GcnEventAssociations",
   "GcnEvent",
   "LocalizationProperties",
   "RecentSource",
@@ -223,6 +231,8 @@ export const TAG_TYPES = [
   "Localizations",
   "Spectra",
   "UserManagement",
+  "DataAvailability",
+  "DataAccessRequest",
 ] as const;
 
 export const skyportalApi = createApi({

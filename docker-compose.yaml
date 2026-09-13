@@ -8,6 +8,7 @@ services:
     volumes:
       - /mnt/rds/turboportal/thumbnails:/skyportal/static/thumbnails
       - /mnt/rds/turboportal/persistentdata:/skyportal/persistentdata
+      - cache:/skyportal/cache:z
       - ./config/docker.yaml:/etc/skyportal/docker.yaml
       - ./data:/skyportal/data
     environment:
@@ -25,7 +26,11 @@ services:
   db-init:
     build: .
     command:
-      ["bash", "-c", "source .venv/bin/activate && PYTHONPATH=. python skyportal/initial_setup.py --config=config.yaml"]
+      [
+        "bash",
+        "-c",
+        "source .venv/bin/activate && PYTHONPATH=. python skyportal/initial_setup.py --config=config.yaml",
+      ]
     depends_on:
       db:
         condition: service_healthy
@@ -48,20 +53,5 @@ services:
       timeout: 5s
       retries: 10
 
-  # Valkey (redis-protocol) server backing skyportal.utils.valkey_cache.
-  valkey:
-    image: valkey/valkey:9.1.0
-    environment:
-      - ALLOW_EMPTY_PASSWORD=yes
-      - VALKEY_DISABLE_COMMANDS=FLUSHDB,FLUSHALL
-    volumes:
-      - valkeydata:/data
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-
 volumes:
-  valkeydata:
+  cache:

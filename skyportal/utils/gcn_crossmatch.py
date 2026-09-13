@@ -33,31 +33,44 @@ import math
 import traceback
 from datetime import timedelta
 
+import healpy
+import numpy as np
 import sqlalchemy as sa
 from astropy.time import Time
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import selectinload, undefer
 from sqlalchemy.orm.attributes import flag_modified
 
 from baselayer.app import models
 from baselayer.log import make_log
+from skyportal.broker_apis._save import save_object_photometry
 from skyportal.broker_apis.interface import survey_permissions
 from skyportal.models import (
     Annotation,
     Broker,
     Candidate,
     Filter,
+    GcnAssociationRule,
     GcnEvent,
+    GcnEventAssociation,
     GcnEventCrossmatchState,
+    GcnEventObj,
     Group,
+    Localization,
     Obj,
-    SourcesConfirmedInGCN,
     User,
 )
 from skyportal.utils.crossmatch import (
     DEFAULT_CUMPROB,
-    contained_in_localization,
+    credible_levels_in_localization,
+    equatorial_to_galactic,
     great_circle_distance,
     search_cone,
+    skymap_consistency,
+    skymap_overlap_integral,
+)
+from skyportal.utils.jpl_sbident import (
+    enqueue_identification,
+    obscode_for_survey,
 )
 from skyportal.utils.naive_datetime import utcnow_naive
 
@@ -65,16 +78,14 @@ log = make_log("gcn_crossmatch")
 
 DEFAULTS = {
     "max_event_age": 31.0,
-    "recheck_interval_minutes": 10.0,
+    "recheck_interval_minutes": 60.0,
     "delta_t_before": 1.0,
     "delta_t_after": 31.0,
     "max_radius_deg": 5.0,
     "credible_level": 90,
     "cumprob": DEFAULT_CUMPROB,
-    # SkyPortal Filter whose broker-side pipeline holds the quality cuts; None
-    # falls back to the built-in ZTF cuts ported from ep-ztf-xmatch.
-    "filter_id": None,
-    "survey": "ZTF",
+    # Per-filter cut on a match's credible level. None keeps all of cumprob.
+    "max_credible_level": None,
     "max_alerts": 500,
     # One-shot search of the window before the event, to spot positions that
     # were already active and so cannot be counterparts.
@@ -93,6 +104,19 @@ ANNOTATION_ORIGIN = "GCN-crossmatch"
 # burning the remaining allowance one event at a time. Held in memory: a restart
 # retrying once is harmless, and it keeps this off the state table.
 _rate_limited_until: dict = {}
+
+
+# Filter configuration changes rarely, so reporting it every cycle is noise --
+# but never reporting it hides a misconfiguration. Log only when it changes.
+_last_filter_report: dict = {}
+
+
+def report_once(key, message):
+    """Log `message` only when it differs from the last one for `key`."""
+    if _last_filter_report.get(key) == message:
+        return
+    _last_filter_report[key] = message
+    log(message)
 
 
 def rate_limited_until(broker_id):
@@ -120,6 +144,62 @@ def is_rate_limited(error):
 def conf(config, key):
     """Read a crossmatch setting, falling back to the documented default."""
     return (config or {}).get(key, DEFAULTS[key])
+
+
+CROSSMATCH_ALTDATA_KEY = "gcn_crossmatch"
+
+
+def filter_settings(filter_, config):
+    """Crossmatch settings for one filter: global config, then its overrides.
+
+    A filter is the unit of configuration -- it already names a broker, a stream
+    (hence survey and programids) and the group that sees the candidates -- so
+    per-survey differences (LSST's cadence and depth are not ZTF's) belong here
+    rather than in one global block.
+    """
+    overrides = (filter_.altdata or {}).get(CROSSMATCH_ALTDATA_KEY) or {}
+    merged = dict(config or {})
+    merged.update({k: v for k, v in overrides.items() if k != "enabled"})
+    return merged
+
+
+def crossmatch_enabled(filter_):
+    return bool(
+        ((filter_.altdata or {}).get(CROSSMATCH_ALTDATA_KEY) or {}).get("enabled")
+    )
+
+
+def event_matches(filter_, event, localization):
+    """Whether this filter should be run against this event.
+
+    Uses the same ``filters`` shape as DefaultGcnTag and the default
+    observation-plan/follow-up requests: an absent or empty list means "no
+    restriction", otherwise the event must match at least one listed value.
+    Lets one filter serve only EP events while another serves GRBs.
+    """
+    filters = ((filter_.altdata or {}).get(CROSSMATCH_ALTDATA_KEY) or {}).get(
+        "filters"
+    ) or {}
+
+    wanted = filters.get("gcn_tags") or []
+    if wanted and not any(tag in (event.tags or []) for tag in wanted):
+        return False
+
+    wanted = filters.get("localization_tags") or []
+    if wanted:
+        tags = [t.text for t in (localization.tags or [])]
+        if not any(tag in tags for tag in wanted):
+            return False
+
+    return True
+
+
+def filter_survey(filter_):
+    """Survey a filter covers, from its stream's collection (ZTF_alerts -> ZTF)."""
+    collection = ((filter_.stream.altdata or {}) if filter_.stream else {}).get(
+        "collection"
+    )
+    return str(collection).split("_")[0].upper() if collection else None
 
 
 def alert_position(alert):
@@ -178,7 +258,16 @@ def _candidate(alert):
     return candidate if isinstance(candidate, dict) else {}
 
 
-def build_annotation_data(event_jd, ra0, dec0, radius_deg, alert, archival=False):
+def build_annotation_data(
+    event_jd,
+    ra0,
+    dec0,
+    radius_deg,
+    alert,
+    archival=False,
+    distance_at=None,
+    credible_level=None,
+):
     """Event-relative and alert-quality values for one matched alert.
 
     Mirrors ep_fritz.py's annotation, so the same columns are available for
@@ -189,12 +278,18 @@ def build_annotation_data(event_jd, ra0, dec0, radius_deg, alert, archival=False
     if jd is not None and event_jd is not None:
         data["delta_t"] = round(jd - event_jd, 4)
 
+    if credible_level is not None:
+        data["credible_level"] = credible_level
+
     position = alert_position(alert)
     if position is not None:
         separation = float(great_circle_distance(ra0, dec0, *position))
         data["distance_arcmin"] = round(separation * 60.0, 4)
         if radius_deg:
             data["distance_ratio"] = round(separation / radius_deg, 4)
+        gal_lat, gal_long = equatorial_to_galactic(*position)
+        data["gal_lat"] = round(float(gal_lat), 4)
+        data["gal_long"] = round(float(gal_long), 4)
 
     candidate = _candidate(alert)
     for key, source in ALERT_ANNOTATION_FIELDS:
@@ -207,6 +302,17 @@ def build_annotation_data(event_jd, ra0, dec0, radius_deg, alert, archival=False
     jdstarthist = candidate.get("jdstarthist")
     if jd is not None and jdstarthist is not None:
         data["age"] = round(jd - float(jdstarthist), 4)
+
+    # For a 3D (GW) skymap, what distance the event implies *here*. Recorded
+    # rather than cut on: an alert rarely has a host redshift at discovery, so
+    # this is for a scanner to compare against once one is known.
+    if distance_at is not None and position is not None:
+        distance = distance_at(*position)
+        if distance is not None:
+            data["dist_mean"], data["dist_std"] = (
+                round(distance[0], 2),
+                round(distance[1], 2),
+            )
 
     if event_jd is not None:
         data["event_mjd"] = round(event_jd - 2400000.5, 6)
@@ -266,8 +372,9 @@ async def ensure_candidate(session, user, alert, obj_id, filter_id, survey=None)
 
     A match is something for a human to scan, not something already accepted:
     the Obj and Candidate make it appear on the scanning page, and it only
-    becomes a Source once someone saves it. Photometry is left to the broker-
-    backed display path rather than written here, for the same reason.
+    becomes a Source once someone saves it. Photometry is ingested separately
+    (see ``ingest_match_photometry``) -- a light curve is what a scanner judges
+    the candidate on, and it implies no acceptance.
 
     Returns True if a candidate now exists for this (obj, filter, epoch).
     """
@@ -321,20 +428,83 @@ async def ensure_candidate(session, user, alert, obj_id, filter_id, survey=None)
     return True
 
 
-async def process_event_broker(
-    session, user, event, localization, broker, state, config=None, archival=False
+def match_cutouts(broker, data, session, survey, permissions):
+    """The alert's science/template/difference cutouts, or None.
+
+    ``get_cutouts`` is keyed by candid, not object id, so it needs the alert
+    fetched for the photometry. Failing here only costs the thumbnails, so it
+    stays separate from the light curve.
+    """
+    if not broker.broker_class.implements().get("get_cutouts"):
+        return None
+    candid = data.get("candid") or (data.get("candidate") or {}).get("candid")
+    if candid is None:
+        return None
+    try:
+        cutouts = broker.broker_class.get_cutouts(
+            broker, candid, session, survey=survey, permissions=permissions
+        )
+        if isinstance(cutouts, list):
+            cutouts = cutouts[0] if cutouts else None
+        return cutouts or None
+    except Exception as e:
+        log(f"No cutouts for {data.get('objectId')}: {e}")
+        return None
+
+
+async def ingest_match_photometry(session, user, broker, obj_id, survey, permissions):
+    """Ingest the matched object's light curve and cutouts, so a scanner has
+    something to judge it on.
+
+    The crossmatch query projects only enough of each alert to place it in space
+    and time -- no detection history -- so the full object is refetched here.
+    Photometry only: the obj is a candidate awaiting review, not a Source.
+
+    ``permissions`` must be the same stream scope the alert query ran under.
+    Brokers fail closed on it -- BOOM reads the accessible programids straight
+    out of it -- so omitting it matches nothing instead of raising.
+
+    Best effort. A broker that cannot serve the history, or an object it no
+    longer has, must not cost us the match itself.
+    """
+    if not broker.broker_class.implements().get("get_alert"):
+        return False
+    try:
+        data = broker.broker_class.get_alert(
+            broker, obj_id, session, survey=survey, permissions=permissions
+        )
+        # get_alert may hand back the raw pipeline result rather than one object
+        if isinstance(data, list):
+            data = data[0] if data else None
+        if not data:
+            log(f"No photometry for {obj_id}: {broker.name} returned no alert")
+            return False
+        cutouts = match_cutouts(broker, data, session, survey, permissions)
+        await save_object_photometry(data, survey, session, user, cutouts=cutouts)
+        return True
+    except Exception as e:
+        log(f"No photometry ingested for {obj_id}: {e}")
+        return False
+
+
+async def process_event_filter(
+    session, user, event, localization, filter_, state, config=None, archival=False
 ):
-    """Query one broker for one event and save whatever genuinely matches.
+    """Query one filter's broker for one event and save whatever genuinely matches.
 
     ``archival`` searches the window *before* the event instead of around it.
     Those alerts cannot have been caused by the event, so they exist to rule a
     candidate out: a position already flaring last month is a variable, not a
     counterpart.
     """
+    cumprob = float(conf(config, "cumprob"))
     cone = search_cone(
         localization,
         max_radius_deg=float(conf(config, "max_radius_deg")),
-        credible_level=int(conf(config, "credible_level")),
+        # never query narrower than containment accepts
+        credible_level=max(
+            int(conf(config, "credible_level")), math.ceil(cumprob * 100)
+        ),
     )
     if cone is None:
         state.status = "skipped"
@@ -358,10 +528,13 @@ async def process_event_broker(
             jd_start = max(jd_start, state.last_alert_jd)
         jd_end = event_jd + float(conf(config, "delta_t_after"))
 
-    permissions = await query_permissions(session, event, conf(config, "filter_id"))
+    broker = filter_.broker
+    survey = filter_survey(filter_)
+    # Bounded by the filter's own stream: its group is who sees the candidates,
+    # so they already hold that stream.
+    permissions = survey_permissions([filter_.stream] if filter_.stream else [])
 
     implements = broker.broker_class.implements()
-    survey = conf(config, "survey")
 
     if implements.get("filter_pipeline") == "mongo":
         # Preferred path: run the quality cuts as a broker-side filter pipeline,
@@ -369,9 +542,7 @@ async def process_event_broker(
         # same versioned, editable place as every other broker filter, and means
         # artifacts, asteroids and variable stars are rejected before they cross
         # the wire rather than after.
-        cuts, cuts_source = await resolve_quality_pipeline(
-            session, broker, conf(config, "filter_id")
-        )
+        cuts, cuts_source = await resolve_quality_pipeline(session, broker, filter_.id)
         result = broker.broker_class.test_filter(
             broker,
             session,
@@ -388,8 +559,8 @@ async def process_event_broker(
             result.get("results", []) if isinstance(result, dict) else (result or [])
         )
         log(
-            f"{broker.name}: {len(alerts)} alert(s) for {event.dateobs} "
-            f"using {cuts_source}"
+            f"{filter_.name} via {broker.name}: {len(alerts)} alert(s) for "
+            f"{event.dateobs} using {cuts_source}"
         )
     else:
         # Fallback for providers with no filter support: an unfiltered positional
@@ -434,16 +605,29 @@ async def process_event_broker(
 
     if undated:
         log(
-            f"{broker.name}: dropped {undated} alert(s) with no JD near "
-            f"{event.dateobs} (cannot place them in the event window)"
+            f"{filter_.name} via {broker.name}: dropped {undated} alert(s) with "
+            f"no JD near {event.dateobs} (cannot place them in the event window)"
         )
 
-    inside = await contained_in_localization(
+    # Geometry once, at the widest region this filter accepts; the cuts below
+    # are arithmetic on the credible level it returns.
+    levels = await credible_levels_in_localization(
         session,
         localization,
         positions,
-        cumprob=float(conf(config, "cumprob")),
+        cumprob=cumprob,
     )
+
+    max_cl = conf(config, "max_credible_level")
+    if max_cl is not None:
+        dropped = {i: cl for i, cl in levels.items() if cl > float(max_cl)}
+        levels = {i: cl for i, cl in levels.items() if cl <= float(max_cl)}
+        if dropped:
+            log(
+                f"{filter_.name} via {broker.name}: {len(dropped)} match(es) inside "
+                f"the {conf(config, 'cumprob')} region but outside this filter's "
+                f"max_credible_level={max_cl}"
+            )
 
     group_ids = [g.id for g in event.groups]
     newest_jd = state.last_alert_jd
@@ -457,8 +641,9 @@ async def process_event_broker(
     event_dateobs = event.dateobs
     state_id = state.id
     user_id = user.id
+    distance_at = distance_lookup(localization)
 
-    for index in sorted(inside):
+    for index in sorted(levels):
         alert = keep[index]
         object_id = alert_object_id(alert)
         try:
@@ -467,8 +652,11 @@ async def process_event_broker(
                 user,
                 alert,
                 object_id,
-                conf(config, "filter_id"),
+                filter_.id,
                 survey=survey,
+            )
+            await ingest_match_photometry(
+                session, user, broker, object_id, survey, permissions
             )
             await annotate_match(
                 session,
@@ -478,11 +666,31 @@ async def process_event_broker(
                 event_dateobs,
                 group_ids,
                 build_annotation_data(
-                    event_jd, ra0, dec0, radius, alert, archival=archival
+                    event_jd,
+                    ra0,
+                    dec0,
+                    radius,
+                    alert,
+                    archival=archival,
+                    distance_at=distance_at,
+                    credible_level=levels[index],
                 ),
             )
             await propose_association(session, user_id, object_id, event_dateobs)
             await session.commit()
+            # Ask whether the candidate is a known minor planet. Every survey is
+            # asked, not just the ones whose alerts carry their own solar-system
+            # match: a field a survey does not populate would otherwise read as
+            # "no minor planet here" for exactly the candidates nobody checked.
+            alert_time = alert_jd(alert)
+            if alert_time is not None:
+                enqueue_identification(
+                    object_id,
+                    user_id,
+                    Time(alert_time, format="jd").datetime,
+                    group_ids=group_ids,
+                    obscode=await obscode_for_survey(session, survey),
+                )
             matched += 1
         except Exception as e:
             await session.rollback()
@@ -508,6 +716,99 @@ async def process_event_broker(
     return matched
 
 
+async def associate_events(session, user, config=None):
+    """Record pairs of GcnEvents whose localizations overlap.
+
+    The pair is the unit, not the event, so each is stored once ordered by
+    dateobs. Existing rows keep their verdict: a scanner's ruling must survive
+    the next cycle, and a later skymap only refreshes the numbers.
+    """
+    rules = (await session.scalars(sa.select(GcnAssociationRule))).all()
+    if not rules:
+        return 0  # nobody has said what counts as coincident yet
+    # record anything that could matter to someone; each user cuts it to their
+    # own rules when they read it
+    window = timedelta(days=max(rule.days for rule in rules))
+    min_consistency = min(rule.min_consistency for rule in rules)
+    cutoff = utcnow_naive() - timedelta(days=float(conf(config, "max_event_age")))
+
+    recent = (
+        (await session.scalars(sa.select(GcnEvent).where(GcnEvent.dateobs >= cutoff)))
+        .unique()
+        .all()
+    )
+    if len(recent) < 2:
+        return 0
+
+    dateobs_list = sorted(event.dateobs for event in recent)
+    found = 0
+    for index, dateobs in enumerate(dateobs_list):
+        localization = await newest_localization(session, user, dateobs)
+        if localization is None:
+            continue
+        for other in dateobs_list[index + 1 :]:
+            if other - dateobs > window:
+                break  # sorted, so everything later is further away
+            other_localization = await newest_localization(session, user, other)
+            if other_localization is None:
+                continue
+            try:
+                overlap = skymap_overlap_integral(localization, other_localization)
+            except Exception as e:
+                log(f"Could not overlap {dateobs} with {other}: {e}")
+                continue
+            if overlap <= 0:
+                continue
+            consistency = skymap_consistency(localization, other_localization)
+            if consistency < min_consistency:
+                continue
+            existing = await session.scalar(
+                sa.select(GcnEventAssociation).where(
+                    GcnEventAssociation.dateobs_1 == dateobs,
+                    GcnEventAssociation.dateobs_2 == other,
+                )
+            )
+            dt_days = (other - dateobs).total_seconds() / 86400.0
+            if existing is not None:
+                existing.overlap = overlap
+                existing.consistency = consistency
+                existing.dt_days = dt_days
+                continue
+            session.add(
+                GcnEventAssociation(
+                    dateobs_1=dateobs,
+                    dateobs_2=other,
+                    overlap=overlap,
+                    consistency=consistency,
+                    dt_days=dt_days,
+                    confirmer_id=user.id,
+                )
+            )
+            found += 1
+    await session.commit()
+    if found:
+        log(f"Recorded {found} new event association(s)")
+    return found
+
+
+async def newest_localization(session, user, dateobs):
+    """The most recent localization for an event, with its skymap loaded."""
+    return await session.scalar(
+        Localization.select(
+            user,
+            options=[
+                undefer(Localization.uniq),
+                undefer(Localization.probdensity),
+                # a skymap-named localization bounds its cone from the contour,
+                # which is deferred and cannot lazy-load in an async session
+                undefer(Localization.contour),
+            ],
+        )
+        .where(Localization.dateobs == dateobs)
+        .order_by(Localization.created_at.desc())
+    )
+
+
 async def run_cycle(config=None, user_id=1):
     """One pass over every due (event, broker) pair."""
     max_age = float(conf(config, "max_event_age"))
@@ -524,29 +825,63 @@ async def run_cycle(config=None, user_id=1):
             return 0
         session.user_or_token = user
 
-        brokers = (
-            (await session.scalars(sa.select(Broker).where(Broker.active.is_(True))))
+        # A filter is one crossmatch configuration: it names the broker, the
+        # stream (hence survey and programids) and the group that sees the
+        # candidates. Opt in per filter so a second survey is a filter, not code.
+        filters = (
+            (
+                await session.scalars(
+                    sa.select(Filter).options(
+                        selectinload(Filter.stream), selectinload(Filter.broker)
+                    )
+                )
+            )
             .unique()
             .all()
         )
-        # Only brokers that actually serve the configured survey: a record is
-        # often survey-specific (Lasair runs one deployment per survey), and
-        # querying an LSST endpoint for ZTF alerts just wastes a round trip. A
-        # provider that declares no surveys is unrestricted, not empty.
-        survey = conf(config, "survey")
+        # A filter that opted in but cannot be used is a misconfiguration, not a
+        # preference: say which and why, rather than dropping it silently and
+        # looking like the service simply found nothing to do.
+        opted_in = [f for f in filters if crossmatch_enabled(f)]
+        filters = []
+        for f in opted_in:
+            problem = None
+            if f.broker is None:
+                problem = "no broker set on the filter"
+            elif not f.broker.active:
+                problem = f"broker {f.broker.name} is not active"
+            elif not f.broker.broker_class.implements().get("query_alerts"):
+                problem = f"broker {f.broker.name} does not implement query_alerts"
+            elif filter_survey(f) is None:
+                problem = (
+                    "its stream names no survey "
+                    "(needs altdata.collection, e.g. ZTF_alerts)"
+                )
+            if problem:
+                report_once(
+                    f"filter:{f.id}",
+                    f"Filter {f.id} ({f.name}) opted in but is being skipped: {problem}",
+                )
+            else:
+                report_once(f"filter:{f.id}", f"Filter {f.id} ({f.name}) is active")
+                filters.append(f)
 
-        def serves(broker):
-            served = broker.broker_class.configured_surveys(broker.altdata) or []
-            return not served or survey in served
-
-        brokers = [
-            b
-            for b in brokers
-            if b.broker_class.implements().get("query_alerts") and serves(b)
-        ]
-        if not brokers:
-            log(f"No active broker serves survey {survey}; nothing to crossmatch")
+        if not filters:
+            report_once(
+                "active",
+                f"No usable filter opted into the crossmatch ({len(opted_in)} opted "
+                f"in); set altdata.{CROSSMATCH_ALTDATA_KEY}.enabled on a filter with "
+                "an active broker and a survey stream",
+            )
             return 0
+
+        report_once(
+            "active",
+            f"Crossmatching against {len(filters)} filter(s): "
+            + ", ".join(
+                f"{f.name} [{filter_survey(f)} via {f.broker.name}]" for f in filters
+            ),
+        )
 
         events = (
             (
@@ -555,7 +890,22 @@ async def run_cycle(config=None, user_id=1):
                     .where(GcnEvent.dateobs >= cutoff)
                     .options(
                         selectinload(GcnEvent.groups).selectinload(Group.streams),
-                        selectinload(GcnEvent.localizations),
+                        # GcnEvent.tags is a hybrid over the _tags
+                        # relationship, so event_matches would lazy-load it.
+                        selectinload(GcnEvent._tags),
+                        # tags eagerly: event_matches reads them, and a lazy
+                        # load in an async session raises MissingGreenlet.
+                        selectinload(GcnEvent.localizations).options(
+                            selectinload(Localization.tags),
+                            # deferred arrays: distance_lookup reads them, and a
+                            # lazy load in an async session raises MissingGreenlet
+                            undefer(Localization.uniq),
+                            undefer(Localization.probdensity),
+                            undefer(Localization.contour),
+                            undefer(Localization.distmu),
+                            undefer(Localization.distsigma),
+                            undefer(Localization.distnorm),
+                        ),
                     )
                 )
             )
@@ -566,76 +916,95 @@ async def run_cycle(config=None, user_id=1):
         for event in events:
             if not event.localizations:
                 continue
-            localization = sorted(
-                event.localizations, key=lambda loc: loc.created_at, reverse=True
-            )[0]
+            # Every localization, not just the newest: one EP observation reports
+            # each detected source as its own cone under the shared observation
+            # timestamp, so a single event can cover several unrelated patches of
+            # sky. Searching only one silently drops the rest.
+            localizations = sorted(event.localizations, key=lambda loc: loc.created_at)
 
-            for broker in brokers:
-                if rate_limited_until(broker.id) is not None:
-                    continue
-                state = await session.scalar(
-                    sa.select(GcnEventCrossmatchState).where(
-                        GcnEventCrossmatchState.gcnevent_id == event.id,
-                        GcnEventCrossmatchState.broker_id == broker.id,
-                    )
-                )
-                if state is None:
-                    state = GcnEventCrossmatchState(
-                        gcnevent_id=event.id, broker_id=broker.id, status="pending"
-                    )
-                    session.add(state)
-                    await session.commit()
-                elif (
-                    state.last_queried is not None and state.last_queried > stale_before
-                ):
-                    continue
-                elif state.status == "skipped":
-                    continue
-
-                try:
-                    # The pre-event window is searched once, before the first
-                    # forward pass, so a candidate that was already active is
-                    # flagged as such the first time anyone looks at it.
-                    if conf(config, "archival") and not state.archival_done:
-                        total += await process_event_broker(
-                            session,
-                            user,
-                            event,
-                            localization,
-                            broker,
-                            state,
-                            config,
-                            archival=True,
+            for localization in localizations:
+                for filter_ in filters:
+                    if not event_matches(filter_, event, localization):
+                        continue
+                    broker = filter_.broker
+                    settings = filter_settings(filter_, config)
+                    if rate_limited_until(broker.id) is not None:
+                        continue
+                    state = await session.scalar(
+                        sa.select(GcnEventCrossmatchState).where(
+                            GcnEventCrossmatchState.gcnevent_id == event.id,
+                            GcnEventCrossmatchState.filter_id == filter_.id,
+                            GcnEventCrossmatchState.localization_id == localization.id,
                         )
+                    )
+                    if state is None:
+                        state = GcnEventCrossmatchState(
+                            gcnevent_id=event.id,
+                            filter_id=filter_.id,
+                            localization_id=localization.id,
+                            status="pending",
+                        )
+                        session.add(state)
                         await session.commit()
-                        state = await session.get(GcnEventCrossmatchState, state.id)
+                    elif (
+                        state.last_queried is not None
+                        and state.last_queried > stale_before
+                    ):
+                        continue
+                    elif state.status == "skipped":
+                        continue
 
-                    total += await process_event_broker(
-                        session, user, event, localization, broker, state, config
-                    )
-                except Exception as e:
-                    traceback.print_exc()
-                    # A broker's HTTP body carries the actual reason (BOOM says
-                    # e.g. which pipeline stage it rejected); raise_for_status
-                    # alone reports only the status code.
-                    detail = getattr(getattr(e, "response", None), "text", "") or ""
-                    message = f"{e}{f' -- {detail[:300]}' if detail else ''}"
-                    state.status = "failed"
-                    state.error = message[:500]
-                    state.last_queried = utcnow_naive()
-                    if is_rate_limited(e):
-                        until = note_rate_limited(
-                            broker.id, conf(config, "rate_limit_backoff_minutes")
+                    try:
+                        # The pre-event window is searched once, before the first
+                        # forward pass, so a candidate that was already active is
+                        # flagged as such the first time anyone looks at it.
+                        if conf(settings, "archival") and not state.archival_done:
+                            total += await process_event_filter(
+                                session,
+                                user,
+                                event,
+                                localization,
+                                filter_,
+                                state,
+                                settings,
+                                archival=True,
+                            )
+                            await session.commit()
+                            state = await session.get(GcnEventCrossmatchState, state.id)
+
+                        total += await process_event_filter(
+                            session, user, event, localization, filter_, state, settings
                         )
-                        log(
-                            f"{broker.name} rate limited; backing off until "
-                            f"{until.isoformat(timespec='seconds')}: {message}"
-                        )
-                    else:
-                        log(
-                            f"Crossmatch failed for {event.dateobs} / {broker.name}: {message}"
-                        )
-                await session.commit()
+                    except Exception as e:
+                        traceback.print_exc()
+                        # A broker's HTTP body carries the actual reason (BOOM says
+                        # e.g. which pipeline stage it rejected); raise_for_status
+                        # alone reports only the status code.
+                        detail = getattr(getattr(e, "response", None), "text", "") or ""
+                        message = f"{e}{f' -- {detail[:300]}' if detail else ''}"
+                        state.status = "failed"
+                        state.error = message[:500]
+                        state.last_queried = utcnow_naive()
+                        if is_rate_limited(e):
+                            until = note_rate_limited(
+                                broker.id, conf(settings, "rate_limit_backoff_minutes")
+                            )
+                            log(
+                                f"{broker.name} rate limited; backing off until "
+                                f"{until.isoformat(timespec='seconds')}: {message}"
+                            )
+                        else:
+                            log(
+                                f"Crossmatch failed for {event.dateobs} / "
+                                f"{filter_.name} ({broker.name}): {message}"
+                            )
+                    await session.commit()
+
+        try:
+            await associate_events(session, user, config)
+        except Exception as e:
+            await session.rollback()
+            log(f"Event association pass failed: {e}")
 
     return total
 
@@ -725,6 +1094,36 @@ ZTF_QUALITY_CUTS = [
 ]
 
 
+def distance_lookup(localization):
+    """Return f(ra, dec) -> (mu, sigma) Mpc at that pixel, or None.
+
+    The conditional distance at the candidate's own position, not the skymap's
+    marginal distance: for a long arc spanning a range of distances the two
+    disagree, and "in the localization volume" means the former. Rasterizing is
+    expensive, so it happens once per localization and is then indexed per
+    candidate.
+    """
+    if not localization.is_3d:
+        return lambda ra, dec: None
+
+    try:
+        prob, distmu, distsigma, _ = localization.flat
+    except Exception as e:
+        log(f"Could not rasterize localization {localization.id} for distance: {e}")
+        return lambda ra, dec: None
+
+    nside = healpy.npix2nside(len(prob))
+
+    def lookup(ra, dec):
+        index = healpy.ang2pix(nside, float(ra), float(dec), lonlat=True)
+        mu, sigma = float(distmu[index]), float(distsigma[index])
+        if not (np.isfinite(mu) and np.isfinite(sigma)) or mu <= 0:
+            return None
+        return mu, sigma
+
+    return lookup
+
+
 def cone_match_stage(ra, dec, radius_deg):
     """A pipeline stage restricting alerts to a cone.
 
@@ -747,45 +1146,24 @@ def cone_match_stage(ra, dec, radius_deg):
 
 
 async def propose_association(session, user_id, obj_id, event_dateobs):
-    """Record the match as awaiting review: confirmed stays NULL until a human
+    """Record the match as awaiting review: status stays 'pending' until a human
     confirms or rejects it. confirmer_id is NOT NULL, so it records the service
     user that proposed the row, not a verdict. Never overwrites an existing one."""
     existing = await session.scalar(
-        sa.select(SourcesConfirmedInGCN).where(
-            SourcesConfirmedInGCN.obj_id == obj_id,
-            SourcesConfirmedInGCN.dateobs == event_dateobs,
+        sa.select(GcnEventObj).where(
+            GcnEventObj.obj_id == obj_id,
+            GcnEventObj.dateobs == event_dateobs,
         )
     )
     if existing is None:
         session.add(
-            SourcesConfirmedInGCN(
-                obj_id=obj_id, dateobs=event_dateobs, confirmer_id=user_id
+            GcnEventObj(
+                obj_id=obj_id,
+                dateobs=event_dateobs,
+                status="pending",
+                confirmer_id=user_id,
             )
         )
-
-
-async def query_permissions(session, event, filter_id):
-    """Alert programs to query, as {survey: [programids]}.
-
-    Bounded by the filter's stream, since its group is who sees the candidates.
-    Using the event's groups drops partnership alerts for public events.
-    """
-    if filter_id is not None:
-        f = await session.scalar(
-            sa.select(Filter)
-            .options(selectinload(Filter.stream))
-            .where(Filter.id == int(filter_id))
-        )
-        if f is not None and f.stream is not None:
-            permissions = survey_permissions([f.stream])
-            if permissions:
-                return permissions
-
-    # No filter, or its stream grants nothing: fall back to the event's groups.
-    streams = []
-    for group in event.groups:
-        streams.extend(group.streams or [])
-    return survey_permissions(streams)
 
 
 async def resolve_quality_pipeline(session, broker, filter_id):
@@ -806,10 +1184,8 @@ async def resolve_quality_pipeline(session, broker, filter_id):
 
     boom_filter_id = ((f.altdata or {}).get("boom") or {}).get("filter_id")
     if boom_filter_id is None:
-        log(
-            f"Filter {filter_id} has no altdata['boom']['filter_id']; "
-            f"falling back to the built-in cuts"
-        )
+        # Not logged: this is a configuration state, not an event, and the
+        # caller already names the source on every query.
         return ZTF_QUALITY_CUTS, "built-in ZTF cuts (no broker filter)"
 
     try:

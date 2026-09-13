@@ -32,7 +32,8 @@ from baselayer.app.env import load_env
 from baselayer.log import make_log
 
 from .. import __version__
-from .cache import Cache, dict_to_bytes
+from .app import get_app_base_url
+from .cache import Cache, cache_folder, dict_to_bytes
 from .naive_datetime import utcnow_naive
 from .tap_services.gaia import GaiaQuery
 
@@ -40,16 +41,14 @@ log = make_log("finder-chart")
 
 _, cfg = load_env()
 
-cache_dir = "cache/finding_charts"
+cache_dir = f"{cache_folder}/finding_charts"
 cache_max_age_days = cfg.get("misc.days_to_keep_finding_charts_cache", 30)
 cache_max_age = cache_max_age_days * 24 * 60 * 60  # days to seconds
 finding_charts_cache = Cache(cache_dir=cache_dir, max_age=cache_max_age)
 
 PS1_CUTOUT_TIMEOUT = 15  # seconds
 
-HOST = f"{cfg['server.protocol']}://{cfg['server.host']}" + (
-    f":{cfg['server.port']}" if cfg["server.port"] not in [80, 443] else ""
-)
+HOST = get_app_base_url()
 
 NGPS_TARGET_BANDS_TO_SNCOSMO = {
     "G": ["ztfg", "sdssg", "lsstg"],
@@ -58,7 +57,7 @@ NGPS_TARGET_BANDS_TO_SNCOSMO = {
     "U": ["sdssu", "bessellux", "standard::u", "lsstu"],
 }
 
-# we inverse the dictionnary
+# we inverse the dictionary
 SNCOSMO_BANDS_TO_NGPS_TARGET = {}
 for k, v in NGPS_TARGET_BANDS_TO_SNCOSMO.items():
     for vv in v:
@@ -139,6 +138,15 @@ irsa = {
     "url_search": "https://irsa.ipac.caltech.edu/ibe/search/ztf/products/",
 }
 
+# A small metadata lookup, but it blocks one of the app's few worker threads,
+# so fail fast when IRSA hangs rather than stalling every request behind it.
+IRSA_SEARCH_TIMEOUT = (6.05, 5.0)
+
+
+class ZTFRefUnavailable(Exception):
+    """IRSA was unreachable or errored -- transient, so it must not be cached
+    the way a genuine "no reference image here" answer is."""
+
 
 starlist_formats = {
     "Keck": {
@@ -180,7 +188,7 @@ starlist_formats = {
 }
 
 JOBLIB_CACHE_SIZE = 100e6  # 100 MB
-offsets_memory = Memory("./cache/offsets/", verbose=0)
+offsets_memory = Memory(f"{cache_folder}/offsets", verbose=0)
 
 
 def memcache(f):
@@ -190,8 +198,9 @@ def memcache(f):
 
 
 def get_url(*args, **kwargs):
-    # Connect and read timeouts
-    kwargs["timeout"] = (6.05, 20)
+    # Connect and read timeouts. setdefault, not assignment: callers fetching
+    # something small on the request path need a shorter one than an image pull.
+    kwargs.setdefault("timeout", (6.05, 20))
     try:
         return requests.get(*args, **kwargs)
     except requests.exceptions.RequestException:
@@ -268,7 +277,7 @@ def get_ps1_cds_url(ra, dec, imsize, *args, **kwargs):
 
 
 @memcache
-def get_ztfref_url(ra, dec, imsize, *args, return_epoch=False, **kwargs):
+def _ztfref_url_and_epoch(ra, dec, imsize):
     """
     From:
     https://gist.github.com/dmitryduev/634bd2b21a77e2b1de89e0bfd39d14b9
@@ -284,23 +293,22 @@ def get_ztfref_url(ra, dec, imsize, *args, return_epoch=False, **kwargs):
         Declination (J2000) of the source
     imsize : float
         Requested image size (on a size) in arcmin
-    *args : optional
-        Extra args (not needed here)
-    **kwargs : optional
-        Extra kwargs (not needed here)
 
     Returns
     -------
-    str
-        the URL to download the ZTF image
+    tuple
+        (url, epoch) -- an empty url means IRSA has no reference image here.
 
+    Raises
+    ------
+    ZTFRefUnavailable
+        IRSA was unreachable or errored. Raised rather than returned so joblib
+        does not cache an outage as a permanent "no reference image".
     """
 
     def _ret(url, meta=None):
         # Also return the ref coadd midpoint epoch (Time, or None) so PM can be
         # carried forward from the reference epoch.
-        if not return_epoch:
-            return url
         try:
             start = Time(
                 pd.to_datetime(meta.loc[0, "startobsdate"]).tz_convert(None).isoformat()
@@ -318,11 +326,17 @@ def get_ztfref_url(ra, dec, imsize, *args, return_epoch=False, **kwargs):
     url_ref_meta = os.path.join(
         irsa["url_search"], f"ref?POS={ra:f},{dec:f}&SIZE={imsize_deg:f}&ct=csv"
     )
-    r = get_url(url_ref_meta)
+    r = get_url(url_ref_meta, timeout=IRSA_SEARCH_TIMEOUT)
     if r is None:
-        return _ret("")
+        raise ZTFRefUnavailable(f"no response from IRSA for {ra} {dec}")
+    if r.status_code != 200:
+        raise ZTFRefUnavailable(f"IRSA returned {r.status_code} for {ra} {dec}")
     s = r.content
-    c = pd.read_csv(io.StringIO(s.decode("utf-8")))
+    try:
+        c = pd.read_csv(io.StringIO(s.decode("utf-8")))
+    except Exception as e:
+        # An error page rather than the CSV we asked for.
+        raise ZTFRefUnavailable(f"unparseable IRSA response for {ra} {dec}: {e}")
 
     try:
         field = f"{c.loc[0, 'field']:06d}"
@@ -344,6 +358,17 @@ def get_ztfref_url(ra, dec, imsize, *args, return_epoch=False, **kwargs):
         f"ztf_{field}_{filt}_c{ccd}_q{quad}_refimg.fits",
     )
     return _ret(path_ursa_ref, c)
+
+
+def get_ztfref_url(ra, dec, imsize, *args, return_epoch=False, **kwargs):
+    """URL of the ZTF reference image covering this position, or "" if there is
+    none (including when IRSA is down -- callers treat ZTFref as optional)."""
+    try:
+        url, epoch = _ztfref_url_and_epoch(ra, dec, imsize)
+    except ZTFRefUnavailable as e:
+        log(f"ZTF reference lookup unavailable: {e}")
+        url, epoch = "", None
+    return (url, epoch) if return_epoch else url
 
 
 def ngps_defaults(mag, magfilter):
@@ -477,7 +502,7 @@ def get_astrometry_backup_from_ztf(
 def get_ztfcatalog(
     ra,
     dec,
-    cache_dir="./cache/finder_cat/",
+    cache_dir=f"{cache_folder}/finder_cat",
     cache_max_items=1000,
     as_astropy_table=False,
 ):
@@ -937,6 +962,9 @@ def get_nearby_offset_stars(
     fainter_diff = 1.5  # mag
     search_multipler = 20
     min_distance = 5.0 / 3600.0  # min distance from source for offset star
+    # Above this proper motion (mas/yr), a ZTF-ref position that cannot be
+    # carried forward is too stale to point at: see the candidate loop below.
+    max_uncorrected_ztfref_pm = 50.0
     source_in_catalog_dist = 0.5 / 3600.0  # min distance from source for offset star
     query_string = f"""
                   SELECT DISTANCE(
@@ -1081,6 +1109,14 @@ def get_nearby_offset_stars(
                                 distance=min(abs(1 / source["parallax"]), 10) * u.kpc,
                                 obstime=ztfref_epoch,
                             ).apply_space_motion(new_obstime=source_obstime)
+                        elif (
+                            np.hypot(source["pmra"], source["pmdec"])
+                            >= max_uncorrected_ztfref_pm
+                        ):
+                            # Without the ref epoch the ZTF position cannot be
+                            # carried forward, and for a fast mover a decade-old
+                            # position can fall outside a narrow slit.
+                            cprime = c.apply_space_motion(new_obstime=source_obstime)
                         else:
                             cprime = SkyCoord(
                                 ra=ztfcatalog[idx].ra.value,
@@ -1320,7 +1356,7 @@ def fits_image(
     center_dec,
     imsize=4.0,
     image_source="ps1",
-    cache_dir="./cache/finder/",
+    cache_dir=f"{cache_folder}/finder",
     cache_max_items=1000,
 ):
     """Returns an opened FITS image centered on the source

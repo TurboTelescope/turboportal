@@ -1,3 +1,17 @@
+def _password_paths(ui_schema, prefix=""):
+    """Dotted paths of every field a ui schema renders as a password."""
+    paths = []
+    for key, value in (ui_schema or {}).items():
+        if not isinstance(value, dict):
+            continue
+        path = f"{prefix}{key}"
+        if value.get("ui:widget") == "password":
+            paths.append(path)
+        else:
+            paths.extend(_password_paths(value, f"{path}."))
+    return paths
+
+
 class _Base:
     # The operations a broker provider may implement. A concrete provider
     # overrides only the ones it supports; the rest stay as the base stub and
@@ -19,6 +33,10 @@ class _Base:
         "test_connection",
     )
 
+    # None hides the credentials tab: the provider has no per-user account.
+    user_credential_schema = None
+    user_credential_ui_schema = None
+
     # subclasses should not modify this
     @classmethod
     def _isimplemented(cls, method_name):
@@ -37,7 +55,9 @@ class _Base:
         # save_as_source and get_photometry are base defaults (interface.py) for
         # any provider that can fetch an object, so gate both on get_alert.
         caps["save_as_source"] = cls._isimplemented("get_alert")
-        caps["get_photometry"] = cls._isimplemented("get_alert")
+        caps["get_photometry"] = (
+            cls._isimplemented("get_alert") and cls.photometry_passthrough
+        )
         # Data-semantics flag (not a method): does cone_search return reference
         # catalogs for the centroid cross-match overlay?
         caps["cross_match_catalogs"] = cls.cross_match_catalogs
@@ -63,20 +83,12 @@ class _Base:
         Defaults to every field the config form renders as a password; a
         provider whose secret uses another widget overrides this.
         """
+        return _password_paths(cls.ui_json_schema)
 
-        def walk(node, prefix=""):
-            paths = []
-            for key, value in (node or {}).items():
-                if not isinstance(value, dict):
-                    continue
-                path = f"{prefix}{key}"
-                if value.get("ui:widget") == "password":
-                    paths.append(path)
-                else:
-                    paths.extend(walk(value, f"{path}."))
-            return paths
-
-        return walk(cls.ui_json_schema)
+    @classmethod
+    def user_credential_secret_fields(cls):
+        """Keys of the per-user credential form that hold secrets."""
+        return _password_paths(cls.user_credential_ui_schema)
 
     # subclasses should not modify this
     @classmethod
@@ -85,6 +97,8 @@ class _Base:
             "methodsImplemented": cls.implements(),
             "formSchemaConfig": cls.form_json_schema_config,
             "uiSchema": cls.ui_json_schema,
+            "userCredentialSchema": cls.user_credential_schema,
+            "userCredentialUiSchema": cls.user_credential_ui_schema,
             "aliasLookup": cls.alias_lookup,
             "surveys": list(cls.surveys),
             "filterKind": cls.filter_kind,

@@ -46,12 +46,12 @@ interface ReportItemProps {
   isMultiGroup: boolean;
 }
 
-// Tri-state: a match the crossmatch proposed is "to review" until a scanner
-// confirms or rejects it.
+// A match the crossmatch proposed stays "to review" until a scanner rules on it.
 const gcnVerdict = (match: any) => {
   if (!match) return null;
-  if (match.confirmed === true) return "confirmed";
-  if (match.confirmed === false) return "rejected";
+  if (match.status === "confirmed") return "confirmed";
+  if (match.status === "rejected") return "rejected";
+  if (match.status === "ambiguous") return "ambiguous";
   return "to review";
 };
 
@@ -85,14 +85,19 @@ const ReportItem = ({ reportId, isMultiGroup }: ReportItemProps) => {
             <FieldTitle sx={{ flex: 1 }}>date</FieldTitle>
             <FieldTitle>scanner</FieldTitle>
             {isMultiGroup && <FieldTitle>group</FieldTitle>}
+            <FieldTitle>groups</FieldTitle>
             <FieldTitle>Source</FieldTitle>
             <FieldTitle>TNS name</FieldTitle>
+            <FieldTitle>aliases</FieldTitle>
             <FieldTitle>comment</FieldTitle>
             <FieldTitle>classifications</FieldTitle>
             <FieldTitle>followup / priority</FieldTitle>
             <FieldTitle>observing run / priority</FieldTitle>
+            <FieldTitle>spectra</FieldTitle>
             <FieldTitle>detections (survey)</FieldTitle>
             <FieldTitle sx={{ flex: 1 }}>host redshift</FieldTitle>
+            <FieldTitle sx={{ flex: 1 }}>z (DESI)</FieldTitle>
+            <FieldTitle sx={{ flex: 1 }}>offset</FieldTitle>
             <FieldTitle sx={{ flex: 1 }}>current age</FieldTitle>
             <FieldTitle sx={{ flex: 1 }}>current filter</FieldTitle>
             {hasGcnMatch && (
@@ -102,6 +107,7 @@ const ReportItem = ({ reportId, isMultiGroup }: ReportItemProps) => {
               <FieldTitle sx={{ flex: 1 }}>sep (\u2032)</FieldTitle>
             )}
             {hasGcnMatch && <FieldTitle>in GCN?</FieldTitle>}
+            <FieldTitle sx={{ flex: 1 }}>previous mag</FieldTitle>
             <FieldTitle sx={{ flex: 1 }}>current mag</FieldTitle>
             <FieldTitle sx={{ flex: 1 }}>absolute mag</FieldTitle>
             <FieldTitle sx={{ flex: 0, minWidth: "auto", borderRight: "none" }}>
@@ -126,7 +132,11 @@ const ReportItem = ({ reportId, isMultiGroup }: ReportItemProps) => {
                 <Field>
                   {reportItem.data.saved_info.map(
                     (info: any, index: number) => (
-                      <div key={index}>{info.saved_by}</div>
+                      <div key={index}>
+                        {[info.saved_by?.first_name, info.saved_by?.last_name]
+                          .filter(Boolean)
+                          .join(" ")}
+                      </div>
                     ),
                   )}
                 </Field>
@@ -143,6 +153,17 @@ const ReportItem = ({ reportId, isMultiGroup }: ReportItemProps) => {
                     )}
                   </Field>
                 )}
+                <Field>
+                  {reportItem.data.groups_saved_to?.map(
+                    (groupName: string, index: number) => (
+                      <Chip
+                        label={groupName.substring(0, 15)}
+                        size="small"
+                        key={index}
+                      />
+                    ),
+                  )}
+                </Field>
                 <Field>
                   <Link
                     to={`/source/${reportItem.obj_id}`}
@@ -168,6 +189,21 @@ const ReportItem = ({ reportId, isMultiGroup }: ReportItemProps) => {
                     </a>
                   )}
                 </Field>
+                <Field>
+                  {reportItem.data.associated_objs?.map((assoc: any) => (
+                    <div key={assoc.obj_id}>
+                      <Link
+                        to={`/source/${assoc.obj_id}`}
+                        role="link"
+                        target="_blank"
+                      >
+                        {assoc.obj_id}
+                      </Link>
+                      {assoc.aliases?.length > 0 &&
+                        ` (${assoc.aliases.join(", ")})`}
+                    </div>
+                  ))}
+                </Field>
                 <Field>{reportItem.data.comment}</Field>
                 <Field>
                   {reportItem.data.classifications?.map(
@@ -176,7 +212,10 @@ const ReportItem = ({ reportId, isMultiGroup }: ReportItemProps) => {
                         title={
                           (classification.ml ? "ML: " : "") +
                           classification.classification +
-                          (classification.probability < 0.1 ? "?" : "")
+                          (classification.probability < 0.1 ? "?" : "") +
+                          (classification.created_at
+                            ? ` — ${displayDate(classification.created_at)}`
+                            : "")
                         }
                         key={index}
                       >
@@ -198,7 +237,11 @@ const ReportItem = ({ reportId, isMultiGroup }: ReportItemProps) => {
                       <Tooltip
                         title={`${followup.instrument} (${followup.type}): ${followup.priority}${
                           followup.status ? ` — ${followup.status}` : ""
-                        }${followup.requester ? ` — by ${followup.requester}` : ""}`}
+                        }${followup.requester ? ` — by ${followup.requester}` : ""}${
+                          followup.start_date && followup.end_date
+                            ? ` — ${followup.start_date} to ${followup.end_date}`
+                            : ""
+                        }`}
                         key={index}
                       >
                         <Chip
@@ -233,17 +276,46 @@ const ReportItem = ({ reportId, isMultiGroup }: ReportItemProps) => {
                   )}
                 </Field>
                 <Field>
+                  {reportItem.data.spectra?.map(
+                    (spectrum: any, index: number) => (
+                      <Tooltip
+                        title={`${spectrum.instrument ?? "spectrum"}${
+                          spectrum.observed_at
+                            ? ` — ${spectrum.observed_at}`
+                            : ""
+                        }${spectrum.origin ? ` — ${spectrum.origin}` : ""}`}
+                        key={index}
+                      >
+                        <Chip
+                          label={`${spectrum.instrument ?? "?"}: ${
+                            spectrum.observed_at?.split("T")[0] ?? "?"
+                          }`}
+                          size="small"
+                        />
+                      </Tooltip>
+                    ),
+                  )}
+                </Field>
+                <Field>
                   {reportItem.data.detections_by_survey &&
                     Object.entries(reportItem.data.detections_by_survey).map(
                       ([survey, det]: [string, any]) => {
                         const parts = [];
                         if (det.first)
                           parts.push(
-                            `first ${det.first.mag} (${det.first.days_ago}d)`,
+                            `first ${det.first.mag} ${det.first.filter} (${det.first.days_ago}d)${det.first.fp ? " [FP]" : ""}`,
+                          );
+                        if (det.first_real)
+                          parts.push(
+                            `first real ${det.first_real.mag} ${det.first_real.filter} (${det.first_real.days_ago}d)`,
                           );
                         if (det.peak)
                           parts.push(
-                            `peak ${det.peak.mag} (${det.peak.days_ago}d)`,
+                            `peak ${det.peak.mag} ${det.peak.filter} (${det.peak.days_ago}d)`,
+                          );
+                        if (det.last)
+                          parts.push(
+                            `last ${det.last.mag} ${det.last.filter} (${det.last.days_ago}d)${det.last.fp ? " [FP]" : ""}`,
                           );
                         return (
                           <Tooltip
@@ -260,6 +332,19 @@ const ReportItem = ({ reportId, isMultiGroup }: ReportItemProps) => {
                     )}
                 </Field>
                 <Field sx={{ flex: 1 }}>{reportItem.data.host_redshift}</Field>
+                <Field sx={{ flex: 1 }}>{reportItem.data.desi_redshift}</Field>
+                <Field sx={{ flex: 1 }}>
+                  {reportItem.data.offset && (
+                    <Tooltip
+                      title={`${reportItem.data.offset.arcsec ?? "?"}″ / ${reportItem.data.offset.kpc ?? "?"} kpc`}
+                    >
+                      <span>
+                        {reportItem.data.offset.arcsec ?? "?"}″ (
+                        {reportItem.data.offset.kpc ?? "?"} kpc)
+                      </span>
+                    </Tooltip>
+                  )}
+                </Field>
                 <Field sx={{ flex: 1 }}>{reportItem.data.current_age}</Field>
                 <Field sx={{ flex: 1 }}>{reportItem.data.current_filter}</Field>
                 {hasGcnMatch && (
@@ -282,7 +367,28 @@ const ReportItem = ({ reportId, isMultiGroup }: ReportItemProps) => {
                     )}
                   </Field>
                 )}
-                <Field sx={{ flex: 1 }}>{reportItem.data.current_mag}</Field>
+                <Field sx={{ flex: 1 }}>
+                  {reportItem.data.previous_mag != null && (
+                    <Tooltip
+                      title={`${reportItem.data.previous_filter ?? "?"} @ MJD ${
+                        reportItem.data.previous_mjd ?? "?"
+                      }`}
+                    >
+                      <span>{reportItem.data.previous_mag}</span>
+                    </Tooltip>
+                  )}
+                </Field>
+                <Field sx={{ flex: 1 }}>
+                  {reportItem.data.current_mag != null && (
+                    <Tooltip
+                      title={`${reportItem.data.current_filter ?? "?"} @ MJD ${
+                        reportItem.data.current_mjd ?? "?"
+                      }`}
+                    >
+                      <span>{reportItem.data.current_mag}</span>
+                    </Tooltip>
+                  )}
+                </Field>
                 <Field sx={{ flex: 1 }}>{reportItem.data.abs_mag}</Field>
                 <Field sx={{ flex: 0, minWidth: "auto", borderRight: "none" }}>
                   <IconButton

@@ -5,6 +5,7 @@ import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import IconButton from "@mui/material/IconButton";
+import MenuItem from "@mui/material/MenuItem";
 import Pagination from "@mui/material/Pagination";
 import Paper from "@mui/material/Paper";
 import Tab from "@mui/material/Tab";
@@ -12,7 +13,6 @@ import Tabs from "@mui/material/Tabs";
 import Tooltip from "@mui/material/Tooltip";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
-import { makeStyles } from "tss-react/mui";
 
 import {
   useGetBrokersQuery,
@@ -21,38 +21,15 @@ import {
 } from "../../ducks/brokers";
 import BrokerAlertCard, { AlertOption } from "./BrokerAlertCard";
 import BrokerAlertFilters from "./BrokerAlertFilters";
+import BrokerCredentialsForm from "./BrokerCredentialsForm";
 import FilterCatalog from "./FilterCatalog";
 import { AlertFilter, fieldsOf, flatten, matchesFilters } from "./alertFields";
 import NewBrokerFilterForm from "./NewBrokerFilterForm";
 import LasairFilterBuilder from "./lasair/LasairFilterBuilder";
 import Spinner from "../Spinner";
+import { dec_to_deg, ra_to_deg } from "../../units";
 
 const PAGE_SIZE = 12;
-
-const useStyles = makeStyles()((theme) => ({
-  root: { padding: theme.spacing(2) },
-  form: {
-    display: "flex",
-    flexWrap: "wrap",
-    alignItems: "center",
-    gap: theme.spacing(2),
-    marginBottom: theme.spacing(2),
-  },
-  grid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fill, minmax(520px, 1fr))",
-    gap: theme.spacing(2),
-  },
-  gridSingle: { gridTemplateColumns: "1fr" },
-  json: { padding: theme.spacing(2), maxHeight: "50vh", overflow: "auto" },
-  pre: {
-    margin: 0,
-    fontFamily: "monospace",
-    fontSize: "0.75rem",
-    whiteSpace: "pre-wrap",
-    wordBreak: "break-word",
-  },
-}));
 
 const asArray = (result: unknown): unknown[] | null => {
   if (Array.isArray(result)) return result;
@@ -81,13 +58,25 @@ const normalizeAlert = (a: any): NormalizedAlert => {
       a?.object_id ??
       a?.object ??
       cand?.objectId,
-    candid: cand?.candid ?? a?.candid,
+    candid: cand?.candid ?? a?.candid ?? a?._id ?? cand?.diaSourceId,
     ra: cand?.ra ?? a?.ra,
     dec: cand?.dec ?? a?.dec,
     magpsf: cand?.magpsf ?? a?.magpsf ?? cand?.mag,
     jd: cand?.jd ?? a?.jd,
     raw: a,
   };
+};
+
+// Mirrors the backend's survey_from_object_id.
+const surveyFromObjectId = (
+  objectId: string,
+  surveys: string[],
+): string | undefined => {
+  const id = objectId.trim();
+  let survey;
+  if (/^ZTF\d{2}[a-z]{7}$/.test(id)) survey = "ZTF";
+  else if (/^\d+$/.test(id)) survey = "LSST";
+  return survey && surveys.includes(survey) ? survey : undefined;
 };
 
 const TooltipTab = ({ tooltip, ...tabProps }: any) => (
@@ -99,7 +88,6 @@ const TooltipTab = ({ tooltip, ...tabProps }: any) => (
 );
 
 const Broker = () => {
-  const { classes, cx } = useStyles();
   const { brokerId: brokerIdParam } = useParams();
   const brokerId = Number(brokerIdParam);
   const { data: brokers, isLoading: brokersLoading } = useGetBrokersQuery();
@@ -108,6 +96,8 @@ const Broker = () => {
   const [ra, setRa] = useState("");
   const [dec, setDec] = useState("");
   const [radius, setRadius] = useState("");
+  const [survey, setSurvey] = useState("");
+  const [queriedSurvey, setQueriedSurvey] = useState("");
   const [mode, setMode] = useState<"search" | "preview">("search");
   const [page, setPage] = useState(1);
   const [tab, setTab] = useState(0);
@@ -127,7 +117,9 @@ const Broker = () => {
   const isFetching = alertFetching || filterFetching;
 
   const broker = (brokers || []).find((b) => b.id === brokerId);
-  const survey = broker?.surveys?.[0] ?? "ZTF";
+  const surveys = broker?.surveys ?? [];
+  const searchSurvey =
+    survey || surveyFromObjectId(objectId, surveys) || surveys[0] || "ZTF";
   const canQuery = Boolean(broker?.capabilities?.["query_alerts"]);
   const canPreview = Boolean(broker?.capabilities?.["test_filter"]);
   const hasFilters = Boolean(broker && broker.filter_kind !== "none");
@@ -145,9 +137,10 @@ const Broker = () => {
     },
     {
       label: "New filter",
-      enabled: broker?.filter_kind === "pipeline",
+      enabled: hasFilters,
       reason: `${broker?.name} does not support filters creation.`,
     },
+    { label: "Credentials", enabled: true, reason: "" },
   ];
   const activeTab = TABS[tab]?.enabled ? tab : TABS.findIndex((t) => t.enabled);
 
@@ -163,20 +156,28 @@ const Broker = () => {
     const uRadius = searchParams.get("radius") || "";
     if (!oid && !uRa) return;
 
+    const uSurvey =
+      searchParams.get("survey") ||
+      surveyFromObjectId(oid, broker.surveys ?? []) ||
+      broker.surveys?.[0] ||
+      "ZTF";
     setObjectId(oid);
     setRa(uRa);
     setDec(uDec);
     setRadius(uRadius);
+    setSurvey(uSurvey);
+    setQueriedSurvey(uSurvey);
     setMode("search");
     setPage(1);
     triggerAlerts({
       brokerId,
       params: {
         objectId: oid || undefined,
-        ra: uRa || undefined,
-        dec: uDec || undefined,
+        ra: uRa ? ra_to_deg(uRa) : undefined,
+        dec: uDec ? dec_to_deg(uDec) : undefined,
         radius: uRadius || undefined,
         radius_units: uRadius ? "arcsec" : undefined,
+        survey: uSurvey,
       },
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -192,14 +193,16 @@ const Broker = () => {
     setMode("search");
     setPage(1);
     setFilters([]);
+    setQueriedSurvey(searchSurvey);
     triggerAlerts({
       brokerId,
       params: {
         objectId: objectId || undefined,
-        ra: coneDisabled ? undefined : ra || undefined,
-        dec: coneDisabled ? undefined : dec || undefined,
+        ra: coneDisabled || !ra ? undefined : ra_to_deg(ra),
+        dec: coneDisabled || !dec ? undefined : dec_to_deg(dec),
         radius: coneDisabled ? undefined : radius || undefined,
         radius_units: !coneDisabled && radius ? "arcsec" : undefined,
+        survey: searchSurvey,
       },
     });
   };
@@ -238,7 +241,7 @@ const Broker = () => {
   if (brokersLoading) return <Spinner />;
 
   return (
-    <Box className={classes.root}>
+    <Box sx={{ p: 2 }}>
       <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 2 }}>
         <IconButton component={Link} to="/brokers" aria-label="back to brokers">
           <ArrowBackIcon />
@@ -277,18 +280,48 @@ const Broker = () => {
           </Tabs>
 
           {activeTab === 0 && (
-            <div className={classes.form}>
+            <Box
+              sx={{
+                display: "flex",
+                flexWrap: "wrap",
+                alignItems: "center",
+                gap: 2,
+                mb: 2,
+              }}
+            >
               <TextField
                 size="small"
                 label="Object ID"
                 value={objectId}
                 onChange={(e) => setObjectId(e.target.value)}
               />
+              {surveys.length > 1 && (
+                <Tooltip
+                  placement="top"
+                  title="Selected automatically from the object ID format, override it if needed"
+                >
+                  <TextField
+                    select
+                    size="small"
+                    label="Survey"
+                    value={searchSurvey}
+                    onChange={(e) => setSurvey(e.target.value)}
+                    sx={{ minWidth: 120 }}
+                  >
+                    {surveys.map((s) => (
+                      <MenuItem key={s} value={s}>
+                        {s}
+                      </MenuItem>
+                    ))}
+                  </TextField>
+                </Tooltip>
+              )}
               <Tooltip title={coneDisabled ? coneReason : ""}>
                 <span>
                   <TextField
                     size="small"
                     label="RA (deg)"
+                    placeholder="deg or HH:MM:SS"
                     value={ra}
                     disabled={coneDisabled}
                     onChange={(e) => setRa(e.target.value)}
@@ -300,6 +333,7 @@ const Broker = () => {
                   <TextField
                     size="small"
                     label="Dec (deg)"
+                    placeholder="deg or ±DD:MM:SS"
                     value={dec}
                     disabled={coneDisabled}
                     onChange={(e) => setDec(e.target.value)}
@@ -324,27 +358,31 @@ const Broker = () => {
               >
                 {isFetching ? "Searching…" : "Search"}
               </Button>
-            </div>
+            </Box>
           )}
 
           {activeTab === 1 &&
-            (broker.filter_kind === "pipeline" ? (
-              <FilterCatalog brokerId={brokerId} />
-            ) : broker.filter_kind === "query" && canPreview ? (
+            (broker.broker_classname === "LASAIRBROKER" && canPreview ? (
               <LasairFilterBuilder
                 brokerId={brokerId}
-                survey={survey}
+                survey={searchSurvey}
                 onPreview={onPreview}
               />
+            ) : broker.broker_classname === "BOOMBROKER" ? (
+              <FilterCatalog brokerId={brokerId} />
             ) : (
-              <div className={classes.form}>
-                <Typography variant="body2" color="text.secondary">
-                  {`Filter kind: ${broker.filter_kind} — editor coming soon.`}
-                </Typography>
-              </div>
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                {`${broker.name} — filter editor coming soon.`}
+              </Typography>
             ))}
 
           {activeTab === 2 && <NewBrokerFilterForm brokerId={brokerId} />}
+          {activeTab === 3 && (
+            <BrokerCredentialsForm
+              brokerId={brokerId}
+              brokerClassname={broker.broker_classname}
+            />
+          )}
 
           {activeTab === (mode === "preview" ? 1 : 0) && (
             <>
@@ -382,10 +420,15 @@ const Broker = () => {
                               objectGroups.length === 1 ? "" : "s"
                             } — showing ${start + 1}–${start + pageGroups.length}`}
                           </Typography>
-                          <div
-                            className={cx(classes.grid, {
-                              [classes.gridSingle]: pageGroups.length === 1,
-                            })}
+                          <Box
+                            sx={{
+                              display: "grid",
+                              gridTemplateColumns:
+                                pageGroups.length === 1
+                                  ? "1fr"
+                                  : "repeat(auto-fill, minmax(520px, 1fr))",
+                              gap: 2,
+                            }}
                           >
                             {pageGroups.map((g) => (
                               <BrokerAlertCard
@@ -393,12 +436,12 @@ const Broker = () => {
                                 brokerId={brokerId}
                                 brokerClassname={broker.broker_classname}
                                 objectId={g.objectId}
-                                survey={survey}
+                                survey={queriedSurvey || searchSurvey}
                                 alerts={g.alerts}
                                 expanded={pageGroups.length === 1}
                               />
                             ))}
-                          </div>
+                          </Box>
                           {pageCount > 1 && (
                             <Pagination
                               count={pageCount}
@@ -416,15 +459,27 @@ const Broker = () => {
                     })()}
                   </>
                 ) : (
-                  <Paper className={classes.json} variant="outlined">
+                  <Paper
+                    variant="outlined"
+                    sx={{ p: 2, maxHeight: "50vh", overflow: "auto" }}
+                  >
                     {kept ? (
                       <Typography variant="subtitle2" gutterBottom>
                         {`${kept.length} result${kept.length === 1 ? "" : "s"}`}
                       </Typography>
                     ) : null}
-                    <pre className={classes.pre}>
+                    <Box
+                      component="pre"
+                      sx={{
+                        m: 0,
+                        fontFamily: "monospace",
+                        fontSize: "0.75rem",
+                        whiteSpace: "pre-wrap",
+                        wordBreak: "break-word",
+                      }}
+                    >
                       {JSON.stringify(kept ?? data, null, 2)}
-                    </pre>
+                    </Box>
                   </Paper>
                 ))}
             </>

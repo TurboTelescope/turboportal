@@ -84,7 +84,9 @@ def test_shift(
 
     # add a comment to the shift
     page.locator('//*[@id="root_comment"]').first.fill("This is a comment")
-    page.locator('//button[@type="submitComment"]').first.click()
+    page.locator(
+        '//form[@data-testid="comment-form"]//*[@name="submitCommentButton"]'
+    ).first.click()
 
     expect(page.locator('//*[contains(text(), "This is a comment")]')).to_have_count(1)
 
@@ -199,9 +201,7 @@ def test_shift(
 
     page.locator('//*[@data-testid="notificationsBadge"]').first.click()
 
-    notification_xpath = (
-        f'//ul/div/a/p[contains(text(),"needs a replacement for shift: {name}")]'
-    )
+    notification_xpath = f'//ul//a[contains(.,"needs a replacement for shift: {name}")]'
     page.locator(notification_xpath).first.click()
 
     page.locator(

@@ -86,6 +86,7 @@ User Guide
    setup
    usage
    api
+   mcp
    dev
    deploy
    observability
@@ -109,6 +110,8 @@ User Guide
    photometric_series
    analysis
    external_services
+   broker_plugins
+   broker_ingestion
    extensions
    pages
    thumbnails

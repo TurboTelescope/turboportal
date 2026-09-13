@@ -15,9 +15,9 @@ import ShiftSummary from "./ShiftSummary";
 import Reminders from "../Reminders";
 import ManageRecurringShifts from "./ManageRecurringShifts";
 import { useGetShiftsQuery, useGetShiftQuery } from "../../ducks/shifts";
-import { useIsReadOnly } from "../../ducks/profile";
+import { useHasPermission } from "../../ducks/profile";
 
-const CommentList = React.lazy(() => import("../comment/CommentList"));
+const CommentThread = React.lazy(() => import("../comment/CommentThread"));
 
 const useStyles = makeStyles()((theme) => ({
   paperContent: {
@@ -48,7 +48,7 @@ interface ShiftPageProps {
 
 const ShiftPage = ({ route = null }: ShiftPageProps) => {
   const { classes } = useStyles();
-  const isReadOnly = useIsReadOnly();
+  const canManageShifts = useHasPermission("Manage shifts");
   const [endDateLimit, setEndDateLimit] = useState(() =>
     getLastDayOfMonthTwoMonthsAgo(new Date()).toISOString(),
   );
@@ -104,7 +104,7 @@ const ShiftPage = ({ route = null }: ShiftPageProps) => {
               width: "100%",
             }}
           >
-            {!isReadOnly && (
+            {canManageShifts && (
               <Button
                 secondary
                 name="add_shift_button"
@@ -198,7 +198,7 @@ const ShiftPage = ({ route = null }: ShiftPageProps) => {
             </Button>
           </Box>
           <div className={classes.paperContent}>
-            {show === "new shift" && !isReadOnly && (
+            {show === "new shift" && canManageShifts && (
               <NewShift
                 preSelectedRange={preSelectedRange}
                 setPreSelectedRange={setPreSelectedRange}
@@ -230,9 +230,10 @@ const ShiftPage = ({ route = null }: ShiftPageProps) => {
             <Paper>
               <div className={classes.comments}>
                 <Suspense fallback={<CircularProgress />}>
-                  <CommentList
-                    associatedResourceType="shift"
+                  <CommentThread
+                    resourceType="shift"
                     shiftID={currentShift?.id}
+                    maxHeightList="350px"
                   />
                 </Suspense>
               </div>

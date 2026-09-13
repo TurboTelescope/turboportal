@@ -45,6 +45,7 @@ static/js/components/templates/SidebarAndHeader.tsx
 static/js/components/templates/HeaderContent.tsx
 static/js/components/templates/HomePage.tsx
 static/js/components/templates/HoursBelowAirmassPlot.tsx
+static/js/components/templates/AboutPlugins.tsx
 static/login.html
 static/loginerror.html
 static/index.html
@@ -53,7 +54,8 @@ static/index.html
 data/taxonomy_sitewide.yaml
 data/taxonomy_demo.yaml
 .idea
-doc/images/erd.png
+doc/erd.svg
+doc/erd-data.html
 
 # gitlog info
 data/gitlog.txt
@@ -86,6 +88,9 @@ services/pgbouncer/pgbouncer.ini
 services/pgbouncer/supervisor.conf
 services/pgbouncer/userlist.txt
 
+# Generated broker_ingest config (from services/broker_ingest/*.template)
+services/broker_ingest/supervisor.conf
+
 # GCN Kafka credential (local only)
 credential
 
@@ -96,3 +101,6 @@ key.json
 
 !flake.lock
 .direnv
+
+# NGSF repo + template bank cloned/downloaded at runtime by the analysis service
+services/ngsf_analysis_service/NGSF/

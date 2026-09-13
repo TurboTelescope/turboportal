@@ -1,12 +1,11 @@
 import asyncio
 import json
-import operator  # noqa: F401
+import operator
 import string
 import time
 from threading import Thread
 
 import arrow
-import gcn
 import requests
 import sqlalchemy as sa
 import tornado.escape
@@ -19,8 +18,6 @@ from baselayer.app.env import load_env
 from baselayer.app.flow import Flow
 from baselayer.app.models import init_db
 from baselayer.log import make_log
-from skyportal.app_utils import get_app_base_url
-from skyportal.email_utils import send_email
 from skyportal.models import (
     Allocation,
     AnalysisService,
@@ -31,6 +28,7 @@ from skyportal.models import (
     FacilityTransaction,
     FollowupRequest,
     GcnEvent,
+    GcnEventExtraction,
     GcnNotice,
     GcnTag,
     Group,
@@ -47,7 +45,15 @@ from skyportal.models import (
     User,
     UserNotification,
 )
+from skyportal.utils.app import get_app_base_url
+from skyportal.utils.email import send_email
 from skyportal.utils.gcn import get_skymap_properties
+from skyportal.utils.gcn_extraction_tags import (
+    apply_tags,
+    classification_of,
+    tag_event,
+    wants_classification,
+)
 from skyportal.utils.notifications import (
     gcn_email_notification,
     gcn_notification_content,
@@ -154,6 +160,7 @@ def user_preferences(target, notification_setting, resource_type):
             "sources",
             "favorite_sources",
             "gcn_events",
+            "gcn_extractions",
             "facility_transactions",
             "mention",
             "analysis_services",
@@ -265,8 +272,6 @@ def send_email_notification(target):
                 subject = f"{cfg['app.title']} - New spectrum on a favorite source"
             elif target["notification_type"] == "favorite_sources_new_comment":
                 subject = f"{cfg['app.title']} - New comment on a favorite source"
-            elif target["notification_type"] == "favorite_sources_new_activity":
-                subject = f"{cfg['app.title']} - New activity on a favorite source"
 
         elif resource_type == "mention":
             if target.get("content"):
@@ -504,13 +509,13 @@ def api(queue):
             is_gcn_localization = target_class_name == "Localization"
             is_gcn_tag = target_class_name == "GcnTag"
             is_classification = target_class_name == "Classification"
+            is_gcn_extraction = target_class_name == "GcnEventExtraction"
             is_spectra = target_class_name == "Spectrum"
             is_comment = target_class_name == "Comment"
             is_group_admission_request = target_class_name == "GroupAdmissionRequest"
             is_analysis_service = target_class_name == "ObjAnalysis"
             is_observation_plan = target_class_name == "EventObservationPlan"
             is_followup_request = target_class_name == "FollowupRequest"
-            is_listing = target_class_name == "Listing"
 
             with DBSession() as session:
                 try:
@@ -732,26 +737,55 @@ def api(queue):
                                 .first()
                                 .to_dict()
                             )
-                        elif is_listing:
+                        elif is_gcn_extraction:
                             users = session.scalars(
                                 sa.select(User).where(
                                     User.preferences["notifications"][
-                                        "favorite_sources"
+                                        "gcn_extractions"
                                     ]["active"]
                                     .astext.cast(sa.Boolean)
                                     .is_(True)
                                 )
                             ).all()
-                            target_class = Listing
+                            target_class = GcnEventExtraction
                             target_data = (
                                 session.scalars(
-                                    sa.select(Listing).where(Listing.id == target_id)
+                                    sa.select(GcnEventExtraction).where(
+                                        GcnEventExtraction.id == target_id
+                                    )
                                 )
                                 .first()
                                 .to_dict()
                             )
                         else:
                             users = []
+
+                    if is_gcn_extraction:
+                        extraction = session.scalar(
+                            sa.select(GcnEventExtraction).where(
+                                GcnEventExtraction.id == target_id
+                            )
+                        )
+                        if extraction is not None:
+                            tagged = apply_tags(
+                                session, extraction, extraction.sent_by_id
+                            )
+                            # The event carries the tag too, since a circular can
+                            # classify a trigger that has no object to tag.
+                            event_tag = tag_event(
+                                session, extraction, extraction.sent_by_id
+                            )
+                            if tagged or event_tag:
+                                session.commit()
+                            if tagged:
+                                log(
+                                    f"tagged {', '.join(tagged)} from extraction {target_id}"
+                                )
+                            if event_tag:
+                                log(
+                                    f"tagged event {extraction.dateobs} "
+                                    f"{event_tag} from extraction {target_id}"
+                                )
 
                     failure_count = 0
                     nb_users = len(users)
@@ -1127,6 +1161,35 @@ def api(queue):
                                             },
                                         }
                                         queue.append(target)
+                                elif is_gcn_extraction:
+                                    label = classification_of(target_data.get("data"))
+                                    if wants_classification(pref, label):
+                                        dateobs = target_data["dateobs"]
+                                        circular_id = target_data.get("circular_id")
+                                        source = (
+                                            f"Circular {circular_id}"
+                                            if circular_id
+                                            else "A circular"
+                                        )
+                                        notification = UserNotification(
+                                            user=user,
+                                            text=(
+                                                f"{source} reports *{label}* "
+                                                f"for event *{dateobs}*"
+                                            ),
+                                            notification_type="gcn_extractions",
+                                            url=f"/gcn_events/{dateobs}",
+                                        )
+                                        session.add(notification)
+                                        session.commit()
+                                        target = {
+                                            **notification.to_dict(),
+                                            "user": {
+                                                **notification.user.to_dict(),
+                                                "preferences": notification.user.preferences,
+                                            },
+                                        }
+                                        queue.append(target)
                                 elif is_analysis_service:
                                     if target_data["status"] == "completed":
                                         analysis_service_id = target_data[
@@ -1474,31 +1537,6 @@ def api(queue):
                                                     user=user,
                                                     text=f"New comment on favorite source *{target_data['obj_id']}*",
                                                     notification_type="favorite_sources_new_comment",
-                                                    url=f"/source/{target_data['obj_id']}",
-                                                )
-                                                session.add(notification)
-                                                session.commit()
-                                                target = {
-                                                    **notification.to_dict(),
-                                                    "user": {
-                                                        **notification.user.to_dict(),
-                                                        "preferences": notification.user.preferences,
-                                                    },
-                                                }
-                                                queue.append(target)
-                                    elif is_listing:
-                                        if (
-                                            len(favorite_sources) > 0
-                                            and "favorite_sources" in pref
-                                        ):
-                                            if any(
-                                                target_data["obj_id"] == source.obj_id
-                                                for source in favorite_sources
-                                            ):
-                                                notification = UserNotification(
-                                                    user=user,
-                                                    text=f"New activity around favorite source *{target_data['obj_id']}* (within {target_data['params'].get('arcsec', 5.0)} arcsec)",
-                                                    notification_type="favorite_sources_new_activity",
                                                     url=f"/source/{target_data['obj_id']}",
                                                 )
                                                 session.add(notification)

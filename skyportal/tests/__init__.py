@@ -1,4 +1,3 @@
-import os
 import time
 import urllib.parse
 
@@ -7,8 +6,6 @@ import requests
 from baselayer.app.config import load_config
 
 from .patch_requests import patch_requests
-
-IS_CI_BUILD = "TRAVIS" in os.environ or "GITHUB_ACTIONS" in os.environ
 
 patch_requests()
 
@@ -111,7 +108,7 @@ def assert_api_fail(status, data, expected_status=None, expected_error_partial=N
 
     """
     if status == 200:
-        raise Exception(f"Expected failure, got status==200")
+        raise Exception("Expected failure, got status==200")
     if expected_error_partial is not None:
         if not data or expected_error_partial not in data["message"]:
             raise Exception(
@@ -120,6 +117,22 @@ def assert_api_fail(status, data, expected_status=None, expected_error_partial=N
     if expected_status is not None:
         if status != expected_status:
             raise Exception(f"Expected status {expected_status}, got {status}")
+
+
+def retry_until(check, timeout=60, interval=1):
+    """Call `check` until it stops raising AssertionError, then return its result.
+
+    Polls on a short interval instead of sleeping a fixed amount, so a test only
+    waits as long as the background work actually takes.
+    """
+    deadline = time.time() + timeout
+    while True:
+        try:
+            return check()
+        except AssertionError:
+            if time.time() >= deadline:
+                raise
+            time.sleep(interval)
 
 
 def wait_for_gcn_event(dateobs, token, timeout=120):

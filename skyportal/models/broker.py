@@ -20,8 +20,8 @@ _, cfg = load_env()
 
 
 class Broker(Base):
-    """A configured connection to an external alert broker (e.g. BOOM,
-    Kowalski, Fink, Lasair).
+    """A configured connection to an external alert broker (e.g. BOOM, Fink,
+    Lasair).
 
     The provider logic lives in a registered ``skyportal.broker_apis.BrokerAPI``
     subclass named by ``broker_classname``; this row supplies the per-instance
@@ -62,6 +62,13 @@ class Broker(Base):
         doc="Whether this broker is the one cross-matches (cone searches) target.",
     )
 
+    default_photometry = sa.Column(
+        sa.Boolean,
+        nullable=False,
+        server_default="false",
+        doc="Whether this broker is the one serving the source page's photometry.",
+    )
+
     __table_args__ = (
         sa.Index(
             "brokers_default_alert_search",
@@ -74,6 +81,12 @@ class Broker(Base):
             "default_crossmatch",
             unique=True,
             postgresql_where=sa.text("default_crossmatch"),
+        ),
+        sa.Index(
+            "brokers_default_photometry",
+            "default_photometry",
+            unique=True,
+            postgresql_where=sa.text("default_photometry"),
         ),
     )
 

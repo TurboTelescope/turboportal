@@ -1,3 +1,4 @@
+from ..utils.survey import survey_from_object_id
 from ._base import _Base
 
 
@@ -54,8 +55,7 @@ def altdata_filter_modules(broker, elements, name=None):
 class BrokerAPI(_Base):
     """An interface that broker providers must implement.
 
-    A "broker" is an external source of alerts (e.g. BOOM, Kowalski, Fink,
-    Lasair). A provider is a registered class that knows how to talk to one
+    A "broker" is an external source of alerts (e.g. BOOM, Fink, Lasair). A provider is a registered class that knows how to talk to one
     broker; a configured instance lives in the ``Broker`` model, which supplies
     per-instance credentials/endpoints via its encrypted ``altdata``.
 
@@ -65,6 +65,11 @@ class BrokerAPI(_Base):
     is a ``staticmethod`` taking the configured ``broker`` (a ``Broker`` model
     instance) plus a DB ``session`` and operation-specific keyword arguments.
     """
+
+    # Safe to run in multiple broker_ingest processes at once? True only for
+    # providers that consume via a shared Kafka consumer group (Kafka rebalances
+    # partitions across them); False for REST pollers, which would duplicate.
+    parallel_ingestion = False
 
     # ------------------------------------------------------------------ #
     # Interactive operations (skyportal -> broker)                       #
@@ -126,15 +131,23 @@ class BrokerAPI(_Base):
         available), then hand off to the shared, survey-keyed writer
         (``_save.save_object_as_source``). Override only for a non-standard
         alert shape.
+
+        The survey is inferred from the object id before falling back to the
+        broker's ``altdata`` default, which names a single survey: a multi-survey
+        broker would otherwise ingest an LSST object's bands as ZTF ones.
         """
         from ._save import save_object_as_source
 
+        kwargs["survey"] = kwargs.get("survey") or survey_from_object_id(
+            alert_id, cls.surveys
+        )
         data = cls.get_alert(broker, alert_id, session, **kwargs)
         survey = (
-            kwargs.get("survey")
+            kwargs["survey"]
             or (data.get("survey") if isinstance(data, dict) else None)
             or (broker.altdata or {}).get("survey")
         )
+        kwargs["survey"] = survey
         cutouts = None
         candid = None
         if isinstance(data, dict):
@@ -151,14 +164,9 @@ class BrokerAPI(_Base):
     @classmethod
     async def get_photometry(cls, broker, alert_id, session, user, **kwargs):
         """Display-only photometry for an object (``alert_id`` = objectId): the
-        persisted, access-controlled DB photometry merged with photometry fetched
-        on demand from the broker, cached per access scope and never written to
-        Postgres (the broker-canonical / marshal-as-cache pattern).
-
-        Default implementation, free to any provider that implements
-        ``get_alert``: fetch the object and hand off to the shared, survey-keyed
-        transform + cache (``_photometry.display_photometry``). Override only for
-        a non-standard alert shape.
+        access-controlled DB photometry merged with photometry fetched on demand
+        from the broker, never written to Postgres. Free to any provider that
+        implements ``get_alert``; override only for a non-standard alert shape.
         """
         from ._photometry import display_photometry
 
@@ -283,6 +291,9 @@ class BrokerAPI(_Base):
     # cross-match overlay. Providers whose cone_search returns their own alert
     # objects (Lasair, Fink) leave this False so the overlay doesn't query them.
     cross_match_catalogs = False
+
+    # False where get_alert is too slow or too costly to run on every page view.
+    photometry_passthrough = True
 
     # Dialect ``test_filter`` expects its ``pipeline`` in, or None if it takes no
     # pipeline at all. A provider backed by SQL (Lasair) silently ignores a Mongo

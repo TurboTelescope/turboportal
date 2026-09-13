@@ -19,6 +19,12 @@ def filter_for_value(page, value, last=False):
     page.locator(input_xpath).first.fill(value)
 
 
+def _profile_patch(page):
+    return page.expect_response(
+        lambda r: "api/internal/profile" in r.url and r.request.method == "PATCH"
+    )
+
+
 def _enable_switch(page, name, attempts=3):
     """Click a notification preference switch and wait until it's checked.
 
@@ -43,6 +49,32 @@ def _enable_switch(page, name, attempts=3):
                 raise
 
 
+def expect_unread_badge(page, count=1, attempts=3):
+    """Open the panel and wait for its notifications tab to count `count` unread.
+
+    The bell badge sums unread notifications and unseen alerts, so the per-tab
+    count is the one tied to notifications alone. A notification is created after
+    the API call that triggers it has returned, and the page only hears about it
+    over a websocket. One created in the gap between the page's first fetch and
+    its socket connecting is missed until something refetches, so reload rather
+    than wait it out. The panel is left closed.
+    """
+    bell = page.locator('//*[@data-testid="notificationsButton"]').first
+    unread = page.locator(
+        f'//*[@data-testid="notificationsTab"]//span[text()="{count}"]'
+    ).first
+    for attempt in range(attempts):
+        bell.click()
+        try:
+            expect(unread).to_be_visible(timeout=10000)
+            page.keyboard.press("Escape")
+            return
+        except AssertionError:
+            if attempt == attempts - 1:
+                raise
+            page.reload()
+
+
 @pytest.mark.flaky(reruns=2)
 def test_mention_generates_notification_then_mark_read_and_delete(
     page, user, public_source
@@ -59,13 +91,15 @@ def test_mention_generates_notification_then_mark_read_and_delete(
 
     add_comment_and_wait_for_display(page, f"@{user.username}")
 
-    expect(page.locator("//span[text()='1']").first).to_be_visible()
+    expect_unread_badge(page)
     page.locator('//*[@data-testid="notificationsButton"]').first.click()
     expect(
         page.locator('//*[text()=" mentioned you in a comment on "]').first
     ).to_be_visible()
     page.locator('//*[contains(@data-testid, "markReadButton")]').first.click()
-    expect(page.locator("//button[text()='Mark unread']").first).to_be_visible()
+    expect(
+        page.locator('//*[contains(@data-testid, "markUnreadButton")]').first
+    ).to_be_visible()
     page.locator(
         '//*[contains(@data-testid, "deleteNotificationButton")]'
     ).first.click()
@@ -210,7 +244,7 @@ def test_classification_on_favorite_source_triggers_notification(
 
     page.goto(f"/become_user/{user.id}")
     page.goto("/")
-    expect(page.locator("//span[text()='1']").first).to_be_visible()
+    expect_unread_badge(page)
     page.locator('//*[@data-testid="notificationsButton"]').first.click()
     expect(
         page.locator(
@@ -256,7 +290,7 @@ def test_spectra_on_favorite_source_triggers_notification(
 
     page.goto(f"/become_user/{user.id}")
     page.goto("/")
-    expect(page.locator("//span[text()='1']").first).to_be_visible()
+    expect_unread_badge(page)
     page.locator('//*[@data-testid="notificationsButton"]').first.click()
     expect(
         page.locator('//*[contains(text(), "New spectrum on favorite source")]').first
@@ -315,7 +349,7 @@ def test_new_classification_on_source_triggers_notification(
 
     page.goto(f"/become_user/{user.id}")
     page.goto("/")
-    expect(page.locator("//span[text()='1']").first).to_be_visible()
+    expect_unread_badge(page)
     page.locator('//*[@data-testid="notificationsButton"]').first.click()
     expect(
         page.locator('//*[contains(text(), "New classification")]').first
@@ -359,7 +393,7 @@ def test_new_spectra_on_source_triggers_notification(
 
     page.goto(f"/become_user/{user.id}")
     page.goto("/")
-    expect(page.locator("//span[text()='1']").first).to_be_visible()
+    expect_unread_badge(page)
     page.locator('//*[@data-testid="notificationsButton"]').first.click()
     expect(
         page.locator('//*[contains(text(), "New spectrum for source")]').first
@@ -378,9 +412,14 @@ def test_new_gcn_event_triggers_notification(page, user):
 
     page.locator('//*[@id="GcnNotificationNameInput"]').first.fill("test")
 
-    page.locator(
-        '//*[@role="combobox" and (@aria-labelledby="selectGcns" or @id="selectGcns")]'
-    ).first.click()
+    # The notice types come from the config endpoint, so this select renders
+    # only once that query resolves; the others in the form are already there.
+    notice_types = page.locator(
+        '//*[@role="combobox" and (@aria-labelledby="selectGcnNoticeTypes"'
+        ' or @id="selectGcnNoticeTypes")]'
+    ).first
+    expect(notice_types).to_be_visible()
+    notice_types.click()
     page.locator('//li[@data-value="FERMI_GBM_GND_POS"]').first.click()
     page.keyboard.press("Escape")
 
@@ -405,7 +444,7 @@ def test_new_gcn_event_triggers_notification(page, user):
     )
 
     page.goto("/")
-    expect(page.locator("//span[text()='1']").first).to_be_visible()
+    expect_unread_badge(page)
     page.locator('//*[@data-testid="notificationsButton"]').first.click()
     expect(page.locator('//*[contains(text(), "New GCN Event")]').first).to_be_visible()
 
@@ -420,9 +459,11 @@ def test_notification_setting_select(page, user):
     page.locator('//*[@name="notification_settings_button_mention"]').first.click()
 
     def _enable_setting(name):
-        page.locator(
-            f'//*[@name="{name}" and contains(@class, "MuiSwitch-input")]'
-        ).first.click()
+        # wait for each save: the switch flips optimistically, before the PATCH lands
+        with _profile_patch(page):
+            page.locator(
+                f'//*[@name="{name}" and contains(@class, "MuiSwitch-input")]'
+            ).first.click()
         expect(
             page.locator(
                 f'//*[@name="{name}" and contains(@class, "MuiSwitch-input")]/../../span[contains(@class,"Mui-checked")]'
@@ -432,7 +473,8 @@ def test_notification_setting_select(page, user):
     _enable_setting("email")
     _enable_setting("slack")
     # sms toggle reveals further sms options
-    page.locator('//*[@name="sms"]').first.click()
+    with _profile_patch(page):
+        page.locator('//*[@name="sms"]').first.click()
     expect(
         page.locator(
             '//*[@name="sms" and contains(@class, "MuiSwitch-input")]/../../span[contains(@class,"Mui-checked")]'
@@ -455,15 +497,14 @@ def test_notification_setting_select(page, user):
     ).first
     slider.focus()
     for _ in range(5):
-        slider.press("ArrowLeft")
+        with _profile_patch(page):
+            slider.press("ArrowLeft")
 
     expect(
         page.locator('//*[@aria-label="time_slot_slider" and @value="3"]').first
     ).to_be_visible()
 
-    with page.expect_response(
-        lambda r: "api/internal/profile" in r.url and r.request.method == "PATCH"
-    ):
+    with _profile_patch(page):
         page.locator(
             '//*[@label="Invert" and contains(@class, "MuiCheckbox-root")]'
         ).first.click()

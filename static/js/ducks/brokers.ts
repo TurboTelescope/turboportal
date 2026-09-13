@@ -12,10 +12,39 @@ export interface Broker {
   active: boolean;
   default_alert_search: boolean;
   default_crossmatch: boolean;
+  default_photometry: boolean;
   capabilities: Record<string, boolean>;
   surveys: string[];
   filter_kind: string;
   altdata?: Record<string, unknown>;
+}
+
+export interface BrokerAPIInfo {
+  methodsImplemented: Record<string, boolean>;
+  formSchemaConfig?: Record<string, unknown> | null;
+  uiSchema?: Record<string, unknown> | null;
+  userCredentialSchema?: Record<string, unknown> | null;
+  userCredentialUiSchema?: Record<string, unknown> | null;
+  surveys?: string[];
+  filterKind?: string;
+}
+
+export interface BrokerCredential {
+  id: number;
+  broker_id: number;
+  topics: string[];
+  topic_filter_ids: Record<string, number[]>;
+  /** Non-secret values only; secrets are reported by name in secrets_set. */
+  credentials: Record<string, unknown>;
+  secrets_set: string[];
+}
+
+export interface BrokerCredentialPatch {
+  credentials?: Record<string, unknown>;
+  /** Overwrite all stored credentials rather than merging the fields sent. */
+  replace_credentials?: boolean;
+  topics?: string[];
+  topic_filter_ids?: Record<string, number[]>;
 }
 
 export interface BrokerAlertQuery {
@@ -41,7 +70,11 @@ export interface FilterCatalogQuery {
   brokerID?: number | "" | "none" | undefined;
 }
 
-const DEFAULT_FIELDS = ["default_alert_search", "default_crossmatch"] as const;
+const DEFAULT_FIELDS = [
+  "default_alert_search",
+  "default_crossmatch",
+  "default_photometry",
+] as const;
 
 const buildQuery = (params: Record<string, string | number | undefined>) => {
   const qs = buildQueryString(params);
@@ -49,7 +82,7 @@ const buildQuery = (params: Record<string, string | number | undefined>) => {
 };
 
 // 64-bit alert ids: JSON.parse would round them, so keep them as strings.
-const ID_KEYS = /"(candid|diaSourceId|diaObjectId)":\s*(\d{16,})/g;
+const ID_KEYS = /"(candid|_id|diaSourceId|diaObjectId)":\s*(\d{16,})/g;
 const parseKeepingIds = async (response: Response) => {
   const text = await response.text();
   return JSON.parse(text.replace(ID_KEYS, '"$1":"$2"'));
@@ -90,32 +123,6 @@ export const brokersApi = skyportalApi.injectEndpoints({
     >({
       query: ({ brokerId, ra, dec, radius, radiusUnits = "arcsec" }) =>
         `api/brokers/${brokerId}/cone_search?ra=${ra}&dec=${dec}&radius=${radius}&radius_units=${radiusUnits}`,
-    }),
-    // Display photometry for an object: persisted DB rows merged with photometry
-    // fetched on demand from the broker (never written to Postgres). Returns the
-    // same point shape as GET /sources/{id}/photometry.
-    getBrokerPhotometry: build.query<
-      any[],
-      {
-        brokerId: number;
-        alertId: string;
-        survey?: string;
-        format?: string;
-        magsys?: string;
-        refresh?: boolean;
-      }
-    >({
-      query: ({ brokerId, alertId, survey, format, magsys, refresh }) => {
-        const params = new URLSearchParams();
-        if (survey) params.set("survey", survey);
-        if (format) params.set("format", format);
-        if (magsys) params.set("magsys", magsys);
-        if (refresh) params.set("refresh", "true");
-        const qs = params.toString();
-        return `api/brokers/${brokerId}/alerts/${alertId}/photometry${
-          qs ? `?${qs}` : ""
-        }`;
-      },
     }),
     // Preview a broker filter (params are filter_kind-specific).
     testBrokerFilter: build.query<
@@ -188,19 +195,7 @@ export const brokersApi = skyportalApi.injectEndpoints({
       invalidatesTags: ["Broker"],
     }),
     // Registered provider classes + their config form schemas / capabilities.
-    getBrokerAPIs: build.query<
-      Record<
-        string,
-        {
-          methodsImplemented: Record<string, boolean>;
-          formSchemaConfig?: Record<string, unknown> | null;
-          uiSchema?: Record<string, unknown> | null;
-          surveys?: string[];
-          filterKind?: string;
-        }
-      >,
-      void
-    >({
+    getBrokerAPIs: build.query<Record<string, BrokerAPIInfo>, void>({
       query: () => "api/internal/broker_apis",
     }),
     createBroker: build.mutation<
@@ -246,6 +241,32 @@ export const brokersApi = skyportalApi.injectEndpoints({
       },
       invalidatesTags: ["Broker"],
     }),
+    getBrokerCredentials: build.query<BrokerCredential | null, number>({
+      query: (id) => `api/brokers/${id}/credentials`,
+      providesTags: ["BrokerCredential"],
+    }),
+    getBrokerCredentialTopics: build.query<{ topics: string[] }, number>({
+      query: (id) => `api/brokers/${id}/credentials/topics`,
+      providesTags: ["BrokerCredential"],
+    }),
+    setBrokerCredentials: build.mutation<
+      { id: number },
+      { brokerId: number; patch: BrokerCredentialPatch }
+    >({
+      query: ({ brokerId, patch }) => ({
+        url: `api/brokers/${brokerId}/credentials`,
+        method: "PUT",
+        body: patch,
+      }),
+      invalidatesTags: ["BrokerCredential"],
+    }),
+    deleteBrokerCredentials: build.mutation<void, number>({
+      query: (id) => ({
+        url: `api/brokers/${id}/credentials`,
+        method: "DELETE",
+      }),
+      invalidatesTags: ["BrokerCredential"],
+    }),
     deleteBroker: build.mutation<void, number>({
       query: (id) => ({ url: `api/brokers/${id}`, method: "DELETE" }),
       invalidatesTags: ["Broker"],
@@ -258,7 +279,6 @@ export const {
   useGetBrokerAlertsQuery,
   useLazyGetBrokerAlertsQuery,
   useGetBrokerAlertQuery,
-  useGetBrokerPhotometryQuery,
   useLazyGetBrokerConeSearchQuery,
   useGetSourceIfSavedQuery,
   useSaveBrokerAlertAsSourceMutation,
@@ -271,4 +291,8 @@ export const {
   useCreateBrokerMutation,
   useUpdateBrokerMutation,
   useDeleteBrokerMutation,
+  useGetBrokerCredentialsQuery,
+  useLazyGetBrokerCredentialTopicsQuery,
+  useSetBrokerCredentialsMutation,
+  useDeleteBrokerCredentialsMutation,
 } = brokersApi;
