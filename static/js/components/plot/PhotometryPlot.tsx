@@ -1,6 +1,6 @@
 import { useTheme } from "@mui/material/styles";
 import { useGetProfileQuery } from "../../ducks/profile";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import Plotly from "plotly.js-basic-dist";
 import createPlotlyComponent from "react-plotly.js/factory";
@@ -58,6 +58,11 @@ import {
 } from "../../utils";
 import { useGetConfigQuery } from "../../ducks/config";
 import { useGetAnalysesQuery } from "../../ducks/source";
+import {
+  useGetPhotometryCutoutsQuery,
+  useRequestPhotometryCutoutsMutation,
+} from "../../ducks/photometry_cutouts";
+import PhotometryCutoutPopover from "./PhotometryCutoutPopover";
 import { buildModelLightcurveTraces, ModelFit } from "./modelLightcurveTraces";
 import ScatterPlotIcon from "@mui/icons-material/ScatterPlot";
 import CornerPlot from "./CornerPlot";
@@ -283,6 +288,9 @@ const PeriodAnnotationDialog = ({
     </>
   );
 };
+
+const CUTOUT_POLL_MS = 10000;
+const MAX_CUTOUT_REQUEST = 5000;
 
 interface PhotometryPlotProps {
   obj_id: string;
@@ -549,6 +557,152 @@ const PhotometryPlot = ({
     { skip: !obj_id },
   );
 
+  const dispatch = useAppDispatch();
+  const graphDivRef = useRef<any>(null);
+  const [cutoutAnchor, setCutoutAnchor] = useState<{
+    id: number;
+    top: number;
+    left: number;
+  } | null>(null);
+  const [unavailableCutouts, setUnavailableCutouts] = useState<Set<number>>(
+    new Set(),
+  );
+  const [cutoutPollMs, setCutoutPollMs] = useState(0);
+  const { data: cutouts } = useGetPhotometryCutoutsQuery(obj_id, {
+    skip: !obj_id,
+    pollingInterval: cutoutPollMs,
+  });
+  const [requestCutouts] = useRequestPhotometryCutoutsMutation();
+  const cutoutById = useMemo(
+    () => new Map((cutouts ?? []).map((c) => [c.photometry_id, c])),
+    [cutouts],
+  );
+  const pointById = useMemo(
+    () => new Map((mainPhotometry ?? []).map((p) => [p.id, p])),
+    [mainPhotometry],
+  );
+  const hasCutoutPoints = useMemo(
+    () => (mainPhotometry ?? []).some((p) => p["altdata"]?.image_id != null),
+    [mainPhotometry],
+  );
+
+  useEffect(() => {
+    setCutoutPollMs(
+      cutouts?.some((c) => c.status === "pending") ? CUTOUT_POLL_MS : 0,
+    );
+  }, [cutouts]);
+
+  const submitCutoutRequest = async (ids: number[]) => {
+    try {
+      const { statuses } = await requestCutouts({
+        objId: obj_id,
+        photometryIds: ids,
+      }).unwrap();
+      const unavailable = Object.keys(statuses)
+        .filter((id) => statuses[id] === "unavailable")
+        .map(Number);
+      if (unavailable.length > 0) {
+        setUnavailableCutouts((prev) => new Set([...prev, ...unavailable]));
+      }
+      return statuses;
+    } catch {
+      dispatch(showNotification("Could not request cutouts", "error"));
+      return null;
+    }
+  };
+
+  const handlePlotClick = async (event: any) => {
+    const id = event?.points?.[0]?.customdata;
+    if (id === null || id === undefined) {
+      return;
+    }
+    if (cutoutById.has(id) || unavailableCutouts.has(id)) {
+      setCutoutAnchor({
+        id,
+        top: event.event?.clientY ?? 0,
+        left: event.event?.clientX ?? 0,
+      });
+      return;
+    }
+    const statuses = await submitCutoutRequest([id]);
+    const status = statuses?.[String(id)];
+    if (status === "unavailable") {
+      dispatch(
+        showNotification(
+          "No archived frame is recorded for this point",
+          "warning",
+        ),
+      );
+    } else if (status === "ready") {
+      dispatch(showNotification("Cutout ready: click the point to view it"));
+    } else if (status === "pending") {
+      dispatch(
+        showNotification(
+          "Cutout requested: click the point again once it is ready",
+        ),
+      );
+    }
+  };
+
+  const visibleCutoutIds = () => {
+    const gd = graphDivRef.current;
+    const layout = gd?._fullLayout;
+    const within = (value: number, range?: number[]) =>
+      !range ||
+      (value >= Math.min(range[0]!, range[1]!) &&
+        value <= Math.max(range[0]!, range[1]!));
+    const logX = layout?.xaxis?.type === "log";
+    const ids = new Set<number>();
+    (gd?.data ?? []).forEach((trace: any) => {
+      if (
+        !["detections", "upperLimits"].includes(trace.dataType) ||
+        trace.visible === false ||
+        trace.visible === "legendonly"
+      ) {
+        return;
+      }
+      (trace.customdata ?? []).forEach((id: number | null, i: number) => {
+        const x = logX ? Math.log10(trace.x[i]) : trace.x[i];
+        if (
+          id !== null &&
+          within(x, layout?.xaxis?.range) &&
+          within(trace.y[i], layout?.yaxis?.range)
+        ) {
+          ids.add(id);
+        }
+      });
+    });
+    return [...ids];
+  };
+
+  const requestVisibleCutouts = async () => {
+    const ids = visibleCutoutIds().filter((id) => {
+      const cutout = cutoutById.get(id);
+      return (
+        !unavailableCutouts.has(id) &&
+        (!cutout || cutout.status === "failed" || cutout.stale)
+      );
+    });
+    if (ids.length === 0) {
+      dispatch(showNotification("Nothing left to request in this view"));
+      return;
+    }
+    if (ids.length > MAX_CUTOUT_REQUEST) {
+      dispatch(
+        showNotification(
+          `${ids.length} points in view; zoom in to request at most ${MAX_CUTOUT_REQUEST}`,
+          "warning",
+        ),
+      );
+      return;
+    }
+    const statuses = await submitCutoutRequest(ids);
+    if (statuses) {
+      const n = Object.values(statuses).filter((s) => s === "pending").length;
+      dispatch(showNotification(`Requested ${n} cutout${n === 1 ? "" : "s"}`));
+    }
+  };
+
   const duplicateOptions = useMemo(() => {
     const allDuplicates = [...(duplicates || []), ...(associated_objs || [])];
     const uniqueDuplicates: any[] = [];
@@ -781,6 +935,12 @@ const PhotometryPlot = ({
         newPoint.text += `<br>Streams: ${newPoint.streams.join(", ")}`;
       }
 
+      newPoint.cutoutEligible =
+        newPoint.obj_id === obj_id && newPoint.altdata?.image_id != null;
+      if (newPoint.cutoutEligible) {
+        newPoint.text += "<br><i>Click for difference-image cutout</i>";
+      }
+
       // Store display values for plotting
       newPoint.magDisplay =
         showExtinctionCorrectionValue && newPoint.mag_corr !== undefined
@@ -958,6 +1118,9 @@ const PhotometryPlot = ({
               plotType === "mag" ? point.limiting_mag : point.fluxDisplay,
             ),
             text: upperLimits.map((point: any) => point.text),
+            customdata: upperLimits.map((point: any) =>
+              point.cutoutEligible ? point.id : null,
+            ),
             mode: "markers",
             type: "scatter",
             name: `${key} (UL)`,
@@ -1006,6 +1169,9 @@ const PhotometryPlot = ({
               thickness: 2,
             },
             text: detections.map((point: any) => point.text),
+            customdata: detections.map((point: any) =>
+              point.cutoutEligible ? point.id : null,
+            ),
             mode: "markers",
             type: "scatter",
             name: key,
@@ -1150,6 +1316,8 @@ const PhotometryPlot = ({
           let upperLimitsX = [];
           let upperLimitsY = [];
           let upperLimitsText = [];
+          let detectionsIds = [];
+          let upperLimitsIds = [];
 
           const groupForKey = groupedPhotometry[key] ?? [];
           for (let i = 0; i < indices.length; i += 1) {
@@ -1160,10 +1328,12 @@ const PhotometryPlot = ({
               detectionsY.push(y[i]);
               detectionsYerr.push(yerr[i]);
               detectionsText.push(point.text);
+              detectionsIds.push(point.cutoutEligible ? point.id : null);
             } else if (point) {
               upperLimitsX.push(x[i]);
               upperLimitsY.push(y[i]);
               upperLimitsText.push(point.text);
+              upperLimitsIds.push(point.cutoutEligible ? point.id : null);
             }
           }
 
@@ -1175,6 +1345,8 @@ const PhotometryPlot = ({
             upperLimitsX = upperLimitsX.concat(upperLimitsX.map((p) => p + 1));
             upperLimitsY = upperLimitsY.concat(upperLimitsY);
             upperLimitsText = upperLimitsText.concat(upperLimitsText);
+            detectionsIds = detectionsIds.concat(detectionsIds);
+            upperLimitsIds = upperLimitsIds.concat(upperLimitsIds);
           }
 
           const existingDetectionTraceVisibility = existingPlotData
@@ -1194,6 +1366,7 @@ const PhotometryPlot = ({
               thickness: 2,
             },
             text: detectionsText,
+            customdata: detectionsIds,
             mode: "markers",
             type: "scatter",
             name: key,
@@ -1224,6 +1397,7 @@ const PhotometryPlot = ({
             x: upperLimitsX,
             y: upperLimitsY,
             text: upperLimitsText,
+            customdata: upperLimitsIds,
             mode: "markers",
             type: "scatter",
             name: `${key} (UL)`,
@@ -1910,6 +2084,13 @@ const PhotometryPlot = ({
           }}
           useResizeHandler
           onDoubleClick={() => setLayoutReset(true)}
+          onClick={handlePlotClick}
+          onInitialized={(_figure: any, graphDiv: any) => {
+            graphDivRef.current = graphDiv;
+          }}
+          onUpdate={(_figure: any, graphDiv: any) => {
+            graphDivRef.current = graphDiv;
+          }}
           onLegendDoubleClick={(e: any) => {
             // e contains a curveNumber (index of the trace clicked in the legend)
             /// and a data object (plotting data)
@@ -2090,6 +2271,20 @@ const PhotometryPlot = ({
           )}
         </DialogContent>
       </Dialog>
+      <PhotometryCutoutPopover
+        anchor={cutoutAnchor}
+        point={cutoutAnchor ? pointById.get(cutoutAnchor.id) : undefined}
+        cutout={cutoutAnchor ? cutoutById.get(cutoutAnchor.id) : undefined}
+        unavailable={
+          cutoutAnchor ? unavailableCutouts.has(cutoutAnchor.id) : false
+        }
+        onRequest={() => {
+          if (cutoutAnchor) {
+            submitCutoutRequest([cutoutAnchor.id]);
+          }
+        }}
+        onClose={() => setCutoutAnchor(null)}
+      />
       <div className={classes.gridContainer}>
         <div className={classes.gridItem} style={{ columnGap: 0 }}>
           <div
@@ -2131,6 +2326,18 @@ const PhotometryPlot = ({
               />
             </div>
           </div>
+          {hasCutoutPoints && (
+            <div className={classes.switchContainer}>
+              <Button
+                secondary
+                size="small"
+                onClick={requestVisibleCutouts}
+                data-testid="request-visible-cutouts"
+              >
+                Request cutouts in view
+              </Button>
+            </div>
+          )}
         </div>
         <div className={classes.gridItem}>
           {t0 && (

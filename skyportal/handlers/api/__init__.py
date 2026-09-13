@@ -175,6 +175,10 @@ from .photometry import (
     PhotometryOriginHandler,
     PhotometryRangeHandler,
 )
+from .photometry_cutout import (
+    PhotometryCutoutRequestHandler,
+    SourcePhotometryCutoutsHandler,
+)
 from .photometry_request import PhotometryRequestHandler
 from .photometry_validation import PhotometryValidationHandler
 from .public_group import PublicGroupHandler
@@ -238,11 +242,7 @@ from .tag import ObjTagHandler, ObjTagOptionHandler
 from .taxonomy import TaxonomyHandler
 from .team import TeamHandler
 from .telescope import TelescopeHandler
-from .thumbnail import (
-    SourceFPCutoutHandler,
-    ThumbnailHandler,
-    ThumbnailPathHandler,
-)
+from .thumbnail import ThumbnailHandler, ThumbnailPathHandler
 from .tns.obj_tns import ObjTNSHandler
 from .unsourced_finder import UnsourcedFinderHandler
 from .user import (

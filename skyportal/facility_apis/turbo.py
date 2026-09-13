@@ -116,13 +116,6 @@ class TURBOAPI(FollowUpAPI):
                 "default": False,
                 "title": "Confirm large request (skip the size warning)",
             },
-            # Cutouts run off the forced-photometry points already posted for
-            # the source, so the window and tier fields above are ignored.
-            "cutouts": {
-                "type": "boolean",
-                "default": False,
-                "title": "DIF cutouts for existing forced photometry",
-            },
         },
         "required": [
             "start_date",

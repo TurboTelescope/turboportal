@@ -13,12 +13,10 @@ from sqlalchemy.exc import StatementError
 from baselayer.app.access import auth_or_token, permissions
 from baselayer.log import make_log
 
-from ...models import Broker, Obj, Thumbnail, User
+from ...models import Broker, Obj, PhotometryCutoutRequest, Thumbnail, User
 from ..base import BaseHandler
 
 log = make_log("api/thumbnail")
-
-FP_CUTOUT_TYPE = "fp_dif"
 
 
 class ThumbnailPostBody(BaseModel):
@@ -33,7 +31,7 @@ class ThumbnailPostBody(BaseModel):
     )
     ttype: str = Field(
         description="Thumbnail type. Must be one of 'new', 'ref', 'sub', "
-        "'sdss', 'dr8', 'new_gz', 'ref_gz', 'sub_gz', 'fp_dif'"
+        "'sdss', 'dr8', 'new_gz', 'ref_gz', 'sub_gz', 'dif'"
     )
     photometry_id: int | None = Field(
         default=None,
@@ -67,6 +65,14 @@ class ThumbnailPutBody(BaseModel):
     origin: str | None = Field(default=None, description="Origin of the Thumbnail.")
     is_grayscale: bool | None = Field(
         default=None, description="Whether the thumbnail is (mostly) grayscale."
+    )
+
+
+async def _clear_cutout_request(session, photometry_id):
+    await session.execute(
+        sa.delete(PhotometryCutoutRequest).where(
+            PhotometryCutoutRequest.photometry_id == photometry_id
+        )
     )
 
 
@@ -121,6 +127,18 @@ async def post_thumbnail(data, user_id, session):
             "Invalid thumbnail size. Only thumbnails "
             "between (16, 16) and (500, 500) allowed."
         )
+    if phot_id is not None:
+        existing_id = await session.scalar(
+            sa.select(Thumbnail.id).where(
+                Thumbnail.photometry_id == phot_id,
+                Thumbnail.type == data["ttype"],
+            )
+        )
+        if existing_id is not None:
+            await _clear_cutout_request(session, phot_id)
+            await session.commit()
+            return existing_id
+
     try:
         t = Thumbnail(
             obj_id=data["obj_id"],
@@ -133,6 +151,8 @@ async def post_thumbnail(data, user_id, session):
             f.write(file_bytes)
 
         session.add(t)
+        if phot_id is not None:
+            await _clear_cutout_request(session, phot_id)
         await session.commit()
 
     except (LookupError, StatementError) as e:
@@ -275,97 +295,6 @@ class ThumbnailHandler(BaseHandler):
             await session.commit()
 
             return self.success()
-
-
-class SourceFPCutoutHandler(BaseHandler):
-    """Per-epoch forced-photometry cutouts for one source, as a set."""
-
-    @auth_or_token
-    async def get(self, obj_id: str):
-        """
-        ---
-        summary: List a source's forced-photometry cutouts
-        description: Forced-photometry DIF cutouts for a source, keyed by the
-          photometry point each one belongs to.
-        tags:
-          - thumbnails
-        parameters:
-          - in: path
-            name: obj_id
-            required: true
-            schema:
-              type: string
-        responses:
-          200:
-            content:
-              application/json:
-                schema: Success
-        """
-        async with self.AsyncSession() as session:
-            thumbs = (
-                (
-                    await session.scalars(
-                        Thumbnail.select(session.user_or_token).where(
-                            Thumbnail.obj_id == obj_id,
-                            Thumbnail.type == FP_CUTOUT_TYPE,
-                        )
-                    )
-                )
-                .unique()
-                .all()
-            )
-            return self.success(
-                data=[
-                    {
-                        "id": t.id,
-                        "photometry_id": t.photometry_id,
-                        "public_url": t.public_url,
-                    }
-                    for t in thumbs
-                ]
-            )
-
-    @permissions(["Manage sources"])
-    async def delete(self, obj_id: str):
-        """
-        ---
-        summary: Delete a source's forced-photometry cutouts
-        description: Delete every forced-photometry DIF cutout for a source.
-        tags:
-          - thumbnails
-        parameters:
-          - in: path
-            name: obj_id
-            required: true
-            schema:
-              type: string
-        responses:
-          200:
-            content:
-              application/json:
-                schema: Success
-        """
-        async with self.AsyncSession() as session:
-            thumbs = (
-                (
-                    await session.scalars(
-                        Thumbnail.select(
-                            session.user_or_token, mode="delete"
-                        ).where(
-                            Thumbnail.obj_id == obj_id,
-                            Thumbnail.type == FP_CUTOUT_TYPE,
-                        )
-                    )
-                )
-                .unique()
-                .all()
-            )
-            # ORM deletes so the after_delete listener removes each PNG; a bulk
-            # DELETE would leave the files behind.
-            for t in thumbs:
-                await session.delete(t)
-            await session.commit()
-            return self.success(data={"deleted": len(thumbs)})
 
 
 class ThumbnailPathHandler(BaseHandler):

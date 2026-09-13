@@ -31,6 +31,7 @@ from .observing_run import *
 from .phot_stat import *
 from .photometric_series import *
 from .photometry import *
+from .photometry_cutout_request import *
 from .photometry_validation import *
 from .public_pages.public_release import *
 from .public_pages.public_source_page import *

@@ -36,7 +36,6 @@ import KeyboardArrowRightIcon from "@mui/icons-material/KeyboardArrowRight";
 import withRouter from "../withRouter";
 
 import CopyPhotometryDialog from "./CopyPhotometryDialog";
-import SourceFPCutouts from "./SourceFPCutouts";
 import ClassificationList from "../classification/ClassificationList";
 import ClassificationForm from "../classification/ClassificationForm";
 import ShowClassification from "../classification/ShowClassification";
@@ -1456,31 +1455,6 @@ const SourceContent = ({ source }: SourceContentProps) => {
                   )}
                 </div>
               </Grid>
-            </AccordionDetails>
-          </Accordion>
-        </Grid>
-        <Grid
-          size={12}
-          sx={{
-            order: { xs: 5, md: 7 },
-          }}
-        >
-          <Accordion
-            defaultExpanded
-            disableGutters
-            className={classes.flexColumn}
-          >
-            <AccordionSummary
-              expandIcon={<ExpandMoreIcon />}
-              aria-controls="fp-cutouts-content"
-              id="fp-cutouts-header"
-            >
-              <Typography className={classes.accordionHeading}>
-                Forced Photometry Cutouts
-              </Typography>
-            </AccordionSummary>
-            <AccordionDetails style={{ padding: "0.5rem" }}>
-              <SourceFPCutouts objId={source.id} isReadOnly={isReadOnly} />
             </AccordionDetails>
           </Accordion>
         </Grid>
