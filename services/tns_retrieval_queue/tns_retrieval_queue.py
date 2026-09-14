@@ -4,7 +4,7 @@ import sys
 import time
 import traceback
 import urllib
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from threading import Thread
 
 import conesearch_alchemy as ca
@@ -15,15 +15,11 @@ import tornado.ioloop
 import tornado.web
 from sqlalchemy.orm import scoped_session, sessionmaker
 
-from baselayer.app import models
 from baselayer.app.env import load_env
 from baselayer.app.flow import Flow
 from baselayer.app.models import init_db
 from baselayer.log import make_log
-from skyportal.handlers.api.photometry import add_external_photometry
-from skyportal.handlers.api.source import post_source_async
-from skyportal.handlers.api.spectrum import post_spectrum
-from skyportal.models import DBSession, Group, Obj, Source, User
+from skyportal.models import DBSession, Obj
 from skyportal.utils.calculations import great_circle_distance
 from skyportal.utils.parse import is_null
 from skyportal.utils.services import check_loaded
@@ -33,8 +29,6 @@ from skyportal.utils.tns import (
     get_recent_TNS,
     get_tns_headers,
     get_tns_url,
-    read_tns_photometry,
-    read_tns_spectrum,
 )
 
 env, cfg = load_env()
@@ -44,7 +38,6 @@ init_db(**cfg["database"])
 
 Session = scoped_session(sessionmaker())
 
-USER_ID = 1  # super admin user ID
 DEFAULT_RADIUS = 2.0 / 3600  # 2 arcsec in degrees
 
 bot_id = cfg.get("app.tns.bot_id", None)
@@ -70,7 +63,7 @@ def refresh_obj_on_frontend(obj, user_id="*"):
             "skyportal/REFRESH_SOURCE",
             payload={"obj_key": obj.internal_key},
         )
-    except Exception:
+    except Exception:  # noqa: BLE001
         log(f"Error refreshing object {obj.id} on frontend")
 
 
@@ -134,127 +127,9 @@ def add_tns_name_to_existing_objs(tns_name, tns_source_data, tns_ra, tns_dec, se
                 session.commit()
                 log(f"Updated object {obj.id} with TNS name {tns_name}")
                 refresh_obj_on_frontend(obj)
-            except Exception as e:
-                log(f"Error updating object: {str(e)}")
+            except Exception as e:  # noqa: BLE001
+                log(f"Error updating object: {e!s}")
                 session.rollback()
-
-
-def add_tns_photometry(tns_name, tns_source, tns_source_data, public_group_id, session):
-    """Add TNS photometry to a TNS source.
-
-    Parameters
-    ----------
-    tns_name : str
-        The full TNS name of the source, including the "AT" or "SN" prefix
-    tns_source : str
-        The TNS source, excluding the "AT" or "SN" prefix
-    tns_source_data : dict
-        The data retrieved from TNS for the source
-    public_group_id : int
-        The ID of the public group
-    session : `sqlalchemy.orm.session.Session`
-        Database session object
-    """
-
-    user = session.scalar(sa.select(User).where(User.id == USER_ID))
-    if user is None:
-        log(
-            f"Error getting user {USER_ID}, required to add photometry with add_external_photometry()"
-        )
-        return
-
-    photometry = tns_source_data.get("photometry", [])
-    if len(photometry) == 0:
-        log(f"No photometry found on TNS for source {tns_source}")
-        return
-
-    failed_photometry = []
-    failed_photometry_errors = []
-    for phot in photometry:
-        try:
-            df, instrument_id = read_tns_photometry(phot, session)
-            data_out = {
-                "obj_id": tns_source,
-                "instrument_id": instrument_id,
-                "group_ids": [public_group_id],
-                **df.to_dict(orient="list"),
-            }
-            read_photometry = True
-        except Exception as e:
-            failed_photometry.append(phot)
-            failed_photometry_errors.append(str(e))
-            log(f"Cannot read TNS photometry {str(phot)}: {str(e)}")
-            continue
-        if read_photometry:
-            try:
-                # bridge to the async impl on a fresh async session (sync poller)
-                async def _add_external_photometry(d=data_out):
-                    async with models.async_plain_session_factory() as s:
-                        u = await s.scalar(sa.select(User).where(User.id == USER_ID))
-                        await add_external_photometry(d, u, s)
-
-                asyncio.run(_add_external_photometry())
-            except Exception as e:
-                failed_photometry.append(phot)
-                failed_photometry_errors.append(str(e))
-                continue
-
-    if len(failed_photometry) > 0:
-        log(
-            f"Failed to retrieve {len(failed_photometry)}/{len(photometry)} TNS photometry points from {tns_name}: {str(list(set(failed_photometry_errors)))}"
-        )
-    else:
-        log(
-            f"Successfully retrieved {len(photometry)} TNS photometry points from {tns_name}"
-        )
-
-
-def add_tns_spectra(tns_name, tns_source, tns_source_data, public_group_id, session):
-    """Add TNS spectra to a TNS source.
-
-    Parameters
-    ----------
-    tns_name : str
-        The full TNS name of the source, including the "AT" or "SN" prefix
-    tns_source : str
-        The TNS source, excluding the "AT" or "SN" prefix
-    tns_source_data : dict
-        The data retrieved from TNS for the source
-    public_group_id : int
-        The ID of the public group
-    session : `sqlalchemy.orm.session.Session`
-        Database session object
-    """
-    spectra = tns_source_data.get("spectra", [])
-    if len(spectra) == 0:
-        log(f"No spectra found on TNS for source {tns_source}")
-        return
-
-    failed_spectra = []
-    failed_spectra_errors = []
-
-    for spectrum in spectra:
-        try:
-            data = read_tns_spectrum(spectrum, session)
-        except Exception as e:
-            log(f"Cannot read TNS spectrum {str(spectrum)}: {str(e)}")
-            continue
-        data["obj_id"] = tns_source
-        data["group_ids"] = [public_group_id]
-
-        # bridge to the async impl on a fresh async session (sync poller)
-        async def _post_spectrum(d=data):
-            async with models.async_plain_session_factory() as s:
-                await post_spectrum(d, USER_ID, s)
-
-        asyncio.run(_post_spectrum())
-
-    if len(failed_spectra) > 0:
-        log(
-            f"Failed to retrieve {len(failed_spectra)}/{len(spectra)} TNS spectra from {tns_name}: {str(list(set(failed_spectra_errors)))}"
-        )
-    else:
-        log(f"Successfully retrieved {len(spectra)} TNS spectra from {tns_name}")
 
 
 def process_queue(queue):
@@ -282,19 +157,8 @@ def process_queue(queue):
         existing_obj = None
         try:
             with DBSession() as session:
-                public_group = session.scalar(
-                    sa.select(Group).where(Group.name == cfg["misc.public_group_name"])
-                )
-                if public_group is None:
-                    log(
-                        f"WARNING: Public group {cfg['misc.public_group_name']} not found in the database, stopping TNS watcher"
-                    )
-                    return
-                public_group_id = public_group.id
-
                 if task.get("obj_id") is not None:
                     # here we are looking for the TNS name of an existing object
-                    # to add the TNS name to the object + create a TNS source
                     existing_obj = session.scalar(
                         sa.select(Obj).where(Obj.id == task.get("obj_id"))
                     )
@@ -320,7 +184,7 @@ def process_queue(queue):
                         raise ValueError(f"{task.get('obj_id')} not found on TNS.")
                     tns_name = f"{tns_prefix} {tns_source}"
                 elif task.get("tns_source"):
-                    # here we just want to create a TNS source
+                    # a TNS source: name any of our objects within 2 arcsec of it
                     tns_source = task.get("tns_source")
                     tns_prefix = task.get("tns_prefix")
 
@@ -341,8 +205,8 @@ def process_queue(queue):
                     "data": json.dumps(
                         {
                             "objname": tns_source,
-                            "photometry": 1,
-                            "spectra": 1,
+                            "photometry": 0,
+                            "spectra": 0,
                         }
                     ),
                 }
@@ -371,7 +235,7 @@ def process_queue(queue):
 
                 try:
                     tns_source_data = r.json().get("data", {})
-                except Exception:
+                except ValueError:
                     tns_source_data = None
                 if tns_source_data is None:
                     log(f"Error getting TNS data for {tns_name}: no reply in data")
@@ -387,13 +251,13 @@ def process_queue(queue):
                     if msg == "No results found.":
                         log(f"Could not find {tns_name} on TNS at {TNS_URL}")
                         continue
-                except Exception:
+                except AttributeError:
                     pass
 
                 tns_prefix = tns_source_data.get("name_prefix", None)
                 if tns_prefix is None:
                     log(
-                        f"Error processing TNS source {tns_name}: obj has no prefix ({str(r.json())})"
+                        f"Error processing TNS source {tns_name}: obj has no prefix ({r.json()!s})"
                     )
                     continue
 
@@ -419,63 +283,7 @@ def process_queue(queue):
                         tns_name, tns_source_data, ra, dec, session
                     )
 
-                with DBSession() as session:
-                    existing_tns_obj = session.scalar(
-                        sa.select(Obj).where(Obj.id == tns_source)
-                    )
-                    existing_tns_public_source = session.scalar(
-                        sa.select(Source).where(
-                            Source.obj_id == tns_source,
-                            Source.group_id == public_group_id,
-                        )
-                    )
-                    # if an object already exists for this tns_source, we update its TNS name
-                    if existing_tns_obj and existing_tns_obj.tns_name != tns_name:
-                        existing_tns_obj.tns_name = tns_name
-                        existing_tns_obj.tns_info = tns_source_data
-                        session.commit()
-                        log(
-                            f"TNS obj {tns_name} already exists in the database, updated its TNS name."
-                        )
-                        refresh_obj_on_frontend(existing_tns_obj)
-
-                    # if the obj does not exist or if it exists but is saved to the public group,
-                    # we create/save the TNS source to the public group
-                    if existing_tns_public_source is None:
-                        log(
-                            f"Saving TNS source {tns_name} to the database (public group)"
-                        )
-                        new_source_data = {
-                            "id": tns_source,  # the name without the prefix
-                            "ra": ra,
-                            "dec": dec,
-                            "tns_name": tns_name,  # the name with the prefix (AT, SN, etc.)
-                            "tns_info": tns_source_data,
-                            "group_ids": [public_group_id],
-                        }
-
-                        async def _post_source(d=new_source_data):
-                            async with models.async_plain_session_factory() as s:
-                                await post_source_async(d, USER_ID, s)
-
-                        asyncio.run(_post_source())
-
-                        add_tns_photometry(
-                            tns_name,
-                            tns_source,
-                            tns_source_data,
-                            public_group_id,
-                            session,
-                        )
-
-                        add_tns_spectra(
-                            tns_name,
-                            tns_source,
-                            tns_source_data,
-                            public_group_id,
-                            session,
-                        )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             traceback.print_exc()
             log(f"Error processing TNS source {tns_name}: {e}")
             user_id = task.get("user_id", None)
@@ -516,7 +324,7 @@ def tns_watcher(queue):
 
     # when the service starts, we look back a certain number of days
     # useful if the app has been down for a while
-    start_date = datetime.now() - timedelta(days=look_back_days)
+    start_date = datetime.now(UTC) - timedelta(days=look_back_days)
     while True:
         try:
             tns_sources = get_recent_TNS(
@@ -540,8 +348,8 @@ def tns_watcher(queue):
             # if we got any sources, we update the start date to now - 1 hour
             # otherwise we keep querying TNS starting from same start date
             if tns_sources:
-                start_date = datetime.now() - timedelta(hours=1)
-        except Exception as e:
+                start_date = datetime.now(UTC) - timedelta(hours=1)
+        except Exception as e:  # noqa: BLE001
             log(f"Error getting TNS sources: {e}, retrying in 4 minutes")
 
         time.sleep(60 * 4)  # sleep for 4 minutes
@@ -635,5 +443,5 @@ if __name__ == "__main__":
     """Start the internal API, the TNS watcher, and the TNS retrieval service"""
     try:
         service()
-    except Exception as e:
-        log(f"Error occurred in TNS retrieval queue: {str(e)}")
+    except Exception as e:  # noqa: BLE001
+        log(f"Error occurred in TNS retrieval queue: {e!s}")
