@@ -2006,6 +2006,14 @@ class SourcePostBody(ObjBody):
 class SourcePatchBody(ObjBody):
     """Request body for updating an existing source (obj_id comes from the path)."""
 
+    # TURBO: ObjBody forbids extra keys, so the flag the patch handler reads
+    # must be declared here to survive body validation.
+    allow_candidate_position_update: bool | None = Field(
+        None,
+        description="Allow the position update even when the object already has "
+        "candidates/alerts, for a survey that owns its own astrometry.",
+    )
+
 
 class SourceDeleteBody(BaseModel):
     """Request body for unsaving a source from a group."""
@@ -2461,9 +2469,7 @@ class SourceHandler(BaseHandler):
         # every redetection, so a survey that posts its objects as candidates
         # must still be able to correct them. Absent the flag the upstream
         # guard below is unchanged.
-        allow_candidate_move = bool(
-            data.pop("allow_candidate_position_update", False)
-        )
+        allow_candidate_move = bool(data.pop("allow_candidate_position_update", False))
 
         async with self.AsyncSession() as session:
             updated_coordinates = False
