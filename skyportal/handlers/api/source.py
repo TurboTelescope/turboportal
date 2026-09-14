@@ -4,7 +4,7 @@ import datetime
 import functools
 import io
 import json
-import operator  # noqa: F401
+import operator
 import re
 import time
 import traceback
@@ -360,7 +360,7 @@ async def get_source(
                             transactions.append(
                                 json.loads(transaction.response["content"])
                             )
-                        except Exception:
+                        except (KeyError, TypeError, ValueError):
                             continue
                 req_data["transactions"] = transactions
                 data.append(req_data)
@@ -910,26 +910,26 @@ async def post_source_async(data, user_id, session, refresh_source=True):
                 int(gid): int(user_id)
                 for gid, user_id in data["saver_per_group_id"].items()
             }
-        except Exception:
+        except (AttributeError, KeyError, TypeError, ValueError):
             raise AttributeError(
                 "Invalid saver_per_group_id field. Please specify a dict with group_ids as keys and user_ids as values"
             )
 
         try:
-            for gid in saver_id_per_group_id:
+            for gid, saver_user_id in saver_id_per_group_id.items():
                 if gid in group_ids:
                     group_saver_for_gid = await session.scalar(
                         sa.select(GroupUser)
                         .options(selectinload(GroupUser.user))
                         .where(
-                            GroupUser.user_id == saver_id_per_group_id[gid],
+                            GroupUser.user_id == saver_user_id,
                             GroupUser.group_id == gid,
                         )
                     )
                     if not group_saver_for_gid:
                         warning_msg = (
                             f"Could not save to group {gid} as user "
-                            f"{saver_id_per_group_id[gid]} (user is not a "
+                            f"{saver_user_id} (user is not a "
                             f"member of the group). Using current user "
                             f"{user.id} instead."
                         )
@@ -938,7 +938,7 @@ async def post_source_async(data, user_id, session, refresh_source=True):
                     else:
                         saver_per_group_id[gid] = group_saver_for_gid.user
 
-        except Exception as e:
+        except (AttributeError, KeyError, TypeError, ValueError) as e:
             raise AttributeError(f"Invalid saver_per_group_id field. {e}")
 
     data.pop("saver_per_group_id", None)
@@ -1176,28 +1176,28 @@ def post_source(data, user_id, session, refresh_source=True):
                 int(gid): int(user_id)
                 for gid, user_id in data["saver_per_group_id"].items()
             }
-        except Exception:
+        except (AttributeError, KeyError, TypeError, ValueError):
             raise AttributeError(
                 "Invalid saver_per_group_id field. Please specify a dict with group_ids as keys and user_ids as values"
             )
 
         try:
-            for gid in saver_id_per_group_id:
+            for gid, saver_user_id in saver_id_per_group_id.items():
                 if gid in group_ids:
                     group_saver_for_gid = session.scalar(
                         sa.select(GroupUser).where(
-                            GroupUser.user_id == saver_id_per_group_id[gid],
+                            GroupUser.user_id == saver_user_id,
                             GroupUser.group_id == gid,
                         )
                     )
                     if not group_saver_for_gid:
-                        warning_msg = f"Could not save to group {gid} as user {saver_id_per_group_id[gid]} (user is not a member of the group). Using current user {user.id} instead."
+                        warning_msg = f"Could not save to group {gid} as user {saver_user_id} (user is not a member of the group). Using current user {user.id} instead."
                         log(f"WARNING: {warning_msg}")
                         warnings.append(warning_msg)
                     else:
                         saver_per_group_id[gid] = group_saver_for_gid.user
 
-        except Exception as e:
+        except (AttributeError, KeyError, TypeError, ValueError) as e:
             raise AttributeError(f"Invalid saver_per_group_id field. {e}")
 
     data.pop("saver_per_group_id", None)
@@ -2207,11 +2207,13 @@ class SourceHandler(BaseHandler):
                     "startDate and endDate must be less than 10 years apart when filtering by localizationDateobs or localizationName",
                 )
 
-        if query.spatialCatalogName is not None:
-            if query.spatialCatalogEntryName is None:
-                return self.error(
-                    "spatialCatalogEntryName must be defined if spatialCatalogName is as well"
-                )
+        if (
+            query.spatialCatalogName is not None
+            and query.spatialCatalogEntryName is None
+        ):
+            return self.error(
+                "spatialCatalogEntryName must be defined if spatialCatalogName is as well"
+            )
 
         user_accessible_group_ids = [g.id for g in self.current_user.accessible_groups]
         is_token_request = isinstance(self.current_user, Token)
@@ -2250,9 +2252,9 @@ class SourceHandler(BaseHandler):
                     # Expected "Source not found" (e.g. an obj that exists as a
                     # candidate but isn't saved): return a clean 404, no traceback.
                     return self.error(str(e), status=404)
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001 — handler must not 500
                     traceback.print_exc()
-                    return self.error(f"Cannot retrieve source: {str(e)}")
+                    return self.error(f"Cannot retrieve source: {e!s}")
 
                 query_size = sizeof(source_info)
                 if query_size >= SIZE_WARNING_THRESHOLD:
@@ -2359,10 +2361,10 @@ class SourceHandler(BaseHandler):
             except ValueError as e:
                 # Invalid query parameters (e.g. a stale/unknown localization) are
                 # client errors: return a clean 400 without a server traceback.
-                return self.error(f"Cannot retrieve sources: {str(e)}", status=400)
-            except Exception as e:
+                return self.error(f"Cannot retrieve sources: {e!s}", status=400)
+            except Exception as e:  # noqa: BLE001 — handler must not 500
                 traceback.print_exc()
-                return self.error(f"Cannot retrieve sources: {str(e)}")
+                return self.error(f"Cannot retrieve sources: {e!s}")
 
             # get_sources has many ways out; the hint belongs where they all
             # converge. An annotation filter that matched nothing is far more
@@ -2435,8 +2437,8 @@ class SourceHandler(BaseHandler):
                 if len(warnings) > 0:
                     response_data["warnings"] = warnings
                 return self.success(data=response_data)
-            except Exception as e:
-                return self.error(f"Failed to post source: {str(e)}")
+            except Exception as e:  # noqa: BLE001 — handler must not 500
+                return self.error(f"Failed to post source: {e!s}")
 
     @permissions(["Upload data"])
     async def patch(self, obj_id: str, *, body: SourcePatchBody = None):
@@ -3005,7 +3007,7 @@ async def get_finding_chart_callable(
                 f"({eph_ra:.5f}, {eph_dec:+.5f}), 1-sigma {sigma} arcmin"
             )
             ra, dec = eph_ra, eph_dec
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — any failure falls back to stored position
             log(f"{obj_id}: no Scout ephemeris for {tdes}, using stored position ({e})")
 
     return functools.partial(
@@ -3193,15 +3195,15 @@ class SourceFinderHandler(BaseHandler):
                     return self.success(data)
                 filename = rez["name"]
                 data = io.BytesIO(rez["data"])
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — handler must not 500
                 # if its a value error with text "Source not found", we return a 404
                 if isinstance(e, ValueError) and str(e) == "Source not found":
                     return self.error("Source not found", status=404)
 
                 # otherwise, we log the error and return a 500
-                log(f"Error generating finding chart for {obj_id}: {str(e)}")
+                log(f"Error generating finding chart for {obj_id}: {e!s}")
                 traceback.print_exc()
-                return self.error(f"Error generating finding chart: {str(e)}")
+                return self.error(f"Error generating finding chart: {e!s}")
 
             await self.send_file(data, filename, output_type=output_type)
 
@@ -3434,7 +3436,7 @@ class SurveyThumbnailHandler(BaseHandler):
             for obj in objs:
                 try:
                     await obj.add_linked_thumbnails(thumbnail_types, session)
-                except Exception:
+                except Exception:  # noqa: BLE001 — handler must not 500
                     await session.rollback()
                     return self.error(f"Error adding thumbnails for {obj.id}")
 
@@ -3528,7 +3530,7 @@ class SourceObservabilityPlotHandler(BaseHandler):
 
             output_format = "pdf"
             fig = plt.figure(figsize=(14, 10))
-            width, height = fig.get_size_inches()
+            width, _ = fig.get_size_inches()
             fig.set_size_inches(width, (len(observers) + 1) / 16 * width)
             ax = plt.axes()
             locator = dates.AutoDateLocator()
