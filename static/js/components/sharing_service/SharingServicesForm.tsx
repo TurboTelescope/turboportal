@@ -37,6 +37,17 @@ import { useGetUsersQuery } from "../../ducks/users";
 
 const Form = withTheme(CustomCheckboxWidgetMuiTheme as any);
 
+// Keep in sync with TNS_AT_TYPES in skyportal/utils/tns.py. Ordered for the
+// dropdown, hence a list rather than an object: integer keys would sort 0 first.
+const TNS_AT_TYPES: [number, string][] = [
+  [1, "PSN - Possible SN"],
+  [2, "PNV - Possible Nova"],
+  [3, "AGN - Known AGN"],
+  [4, "NUC - Possibly nuclear"],
+  [5, "FRB - Fast Radio Burst event"],
+  [0, "Other - Undefined"],
+];
+
 interface SharingServicesDialogProps {
   obj_id: string;
   dialogOpen: boolean;
@@ -267,6 +278,14 @@ const SharingServicesDialog = ({
           "If enabled, the sharing service will not publish the data if there is no first and last detection (at least 2 detections).",
       },
       ...(sendToTNS && {
+        at_type: {
+          type: "integer",
+          title: "TNS AT type",
+          enum: TNS_AT_TYPES.map(([value]) => value),
+          default: 1,
+          description:
+            "How the transient is reported to TNS. Unclassified reports are PSN by default.",
+        },
         archival: {
           type: "boolean",
           title: "TNS Archival",
@@ -306,6 +325,9 @@ const SharingServicesDialog = ({
   };
 
   const uiSchema: any = {
+    at_type: {
+      "ui:enumNames": TNS_AT_TYPES.map(([, label]) => label),
+    },
     instrument_ids: {
       "ui:enumNames": allowedInstruments.map(
         (instrument: any) =>

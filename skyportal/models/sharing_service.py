@@ -294,6 +294,14 @@ class SharingServiceSubmission(Base):
         sa.Column(psql.JSONB, doc="Serialized HTTP response from Hermes.")
     )
 
+    at_type = sa.Column(
+        sa.Integer,
+        nullable=False,
+        server_default="1",
+        default=1,
+        doc="TNS AT report type (see TNS_AT_TYPES); 1 (PSN) by default.",
+    )
+
     archival = sa.Column(
         sa.Boolean,
         nullable=False,

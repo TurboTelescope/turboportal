@@ -229,7 +229,7 @@ def build_tns_report(
         "discovery_datetime": Time(time_first, format="mjd").datetime.strftime(
             "%Y-%m-%d %H:%M:%S.%f"
         ),
-        "at_type": 1,  # allow other options?
+        "at_type": submission_request.at_type,
         "proprietary_period_groups": [sharing_service.tns_source_group_id],
         "proprietary_period": proprietary_period,
         "non_detection": non_detection,

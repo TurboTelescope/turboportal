@@ -39,6 +39,16 @@ log = make_log("tns_utils")
 
 # IDs here: https://www.wis-tns.org/api/values
 
+# AT report types TNS accepts; the default is PSN.
+TNS_AT_TYPES = {
+    0: "Other - Undefined",
+    1: "PSN - Possible SN",
+    2: "PNV - Possible Nova",
+    3: "AGN - Known AGN",
+    4: "NUC - Possibly nuclear",
+    5: "FRB - Fast Radio Burst event",
+}
+
 TNS_INSTRUMENT_IDS = {
     "alfosc": 41,
     "asas-sn": 195,

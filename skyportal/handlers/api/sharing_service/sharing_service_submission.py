@@ -16,6 +16,7 @@ from ....utils.data_access import (
     validate_photometry_options,
 )
 from ....utils.parse import get_page_and_n_per_page
+from ....utils.tns import TNS_AT_TYPES
 from ...base import BaseHandler
 
 _, cfg = load_env()
@@ -77,6 +78,10 @@ class SharingServiceSubmissionPostBody(BaseModel):
         default="", description="Custom string for publishers"
     )
     remarks: str | None = Field(default="", description="Custom remarks string")
+    at_type: int | None = Field(
+        default=1,
+        description="TNS AT report type: 0 Other, 1 PSN, 2 PNV, 3 AGN, 4 NUC, 5 FRB",
+    )
     archival: bool | None = Field(
         default=False, description="Flag to indicate if the source is archival"
     )
@@ -130,6 +135,7 @@ class SharingServiceSubmissionHandler(BaseHandler):
         sharing_service_id = body.sharing_service_id
         publishers = body.publishers
         remarks = body.remarks
+        at_type = body.at_type
         archival = body.archival
         archival_comment = body.archival_comment
         instrument_ids = body.instrument_ids
@@ -154,6 +160,10 @@ class SharingServiceSubmissionHandler(BaseHandler):
             return self.error("This instance is not configured to use Hermes")
         if publishers == "" or not isinstance(publishers, str):
             return self.error("publishers is required and must be a non-empty string")
+        if at_type not in TNS_AT_TYPES:
+            return self.error(
+                f"Invalid at_type: {at_type}, must be one of {sorted(TNS_AT_TYPES)}"
+            )
         async with self.AsyncSession() as session:
             await process_instrument_ids_async(
                 session, session.user_or_token, instrument_ids
@@ -222,6 +232,7 @@ class SharingServiceSubmissionHandler(BaseHandler):
                 user_id=self.associated_user_object.id,
                 custom_publishing_string=publishers,
                 custom_remarks_string=remarks,
+                at_type=at_type,
                 archival=archival,
                 archival_comment=archival_comment,
                 instrument_ids=instrument_ids,

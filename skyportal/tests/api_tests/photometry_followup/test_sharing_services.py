@@ -256,6 +256,25 @@ def test_post_and_delete_sharing_service(
     assert status == 400
     assert "This instance is not configured to use Hermes" in data["message"]
 
+    # an AT type outside the TNS set is rejected
+    request_data = {
+        "sharing_service_id": id,
+        "obj_id": public_source.id,
+        "publish_to_tns": True,
+        "publishers": "test publisher string",
+        "remarks": "test remark string",
+        "archival": False,
+        "at_type": 42,
+    }
+    status, data = api(
+        "POST",
+        f"sharing_service/submission",
+        data=request_data,
+        token=super_admin_token,
+    )
+    assert status == 400
+    assert "Invalid at_type" in data["message"]
+
     # publish the public source to TNS
     request_data = {
         "sharing_service_id": id,
@@ -264,6 +283,7 @@ def test_post_and_delete_sharing_service(
         "publishers": "test publisher string",
         "remarks": "test remark string",
         "archival": False,
+        "at_type": 4,
     }
     status, data = api(
         "POST",
@@ -290,6 +310,7 @@ def test_post_and_delete_sharing_service(
     assert submissions[0]["custom_publishing_string"] == "test publisher string"
     assert submissions[0]["custom_remarks_string"] == "test remark string"
     assert submissions[0]["archival"] is False
+    assert submissions[0]["at_type"] == 4
     # TNS status should be pending
     assert "pending" in submissions[0]["tns_status"]
     # Hermes status should be None
