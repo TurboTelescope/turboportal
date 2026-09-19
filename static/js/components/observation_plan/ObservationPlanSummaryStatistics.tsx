@@ -1,4 +1,5 @@
 import CircularProgress from "@mui/material/CircularProgress";
+import { isQueuedOrComplete } from "./observationPlanStatus";
 
 interface ObservationPlanSummaryStatisticsProps {
   observationplanRequest: {
@@ -40,11 +41,7 @@ const ObservationPlanSummaryStatistics = ({
   const summaryStatistics =
     observationplanRequest?.observation_plans?.[0]?.statistics;
 
-  if (
-    !["complete", "submitted to telescope queue"].includes(
-      observationplanRequest?.status as string,
-    )
-  ) {
+  if (!isQueuedOrComplete(observationplanRequest?.status)) {
     return "Only available for completed requests.";
   }
 

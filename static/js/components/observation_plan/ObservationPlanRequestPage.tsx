@@ -13,6 +13,7 @@ import createPlotlyComponent from "react-plotly.js/factory";
 
 import StyledDataGrid from "../StyledDataGrid";
 import { useGetObservationPlanRequestsQuery } from "../../ducks/observationPlans";
+import { isQueuedOrComplete } from "./observationPlanStatus";
 
 const useStyles = makeStyles()(() => ({
   root: { width: "100%" },
@@ -26,14 +27,13 @@ const COMPLETED_COLOR = "#2e7d32";
 const ACTIVE_COLOR = "#ed6c02";
 const FAILED_COLOR = "#d32f2f";
 
-const DONE_STATUSES = ["complete", "submitted to telescope queue"];
 const ACTIVE_STATUSES = ["pending submission", "running"];
 
 // Statuses are free text: a failure carries the exception that caused it, so
 // anything not recognised is treated as a failure rather than assumed benign.
 const statusKind = (status?: string) => {
   if (!status) return "failed";
-  if (DONE_STATUSES.includes(status)) return "done";
+  if (isQueuedOrComplete(status)) return "done";
   if (ACTIVE_STATUSES.includes(status)) return "active";
   return "failed";
 };

@@ -36,6 +36,10 @@ import AddRunFromObservationPlanPage from "./AddRunFromObservationPlanPage";
 import ObservationPlanGlobe from "./ObservationPlanGlobe";
 import ObservationPlanSummaryStatistics from "./ObservationPlanSummaryStatistics";
 import {
+  isQueuedAtFacility,
+  isQueuedOrComplete,
+} from "./observationPlanStatus";
+import {
   useGetInstrumentObsplanFormsQuery,
   useGetInstrumentsQuery,
 } from "../../ducks/instruments";
@@ -311,9 +315,7 @@ const ObservationPlanRequestLists = ({
               onClick={() => handleDelete(observationplanRequest.id)}
               size="small"
               data-testid={`deleteRequest_${observationplanRequest.id}`}
-              disabled={
-                observationplanRequest.status === "submitted to telescope queue"
-              }
+              disabled={isQueuedAtFacility(observationplanRequest.status)}
               sx={{ marginBottom: "0.2rem" }}
             >
               Delete
@@ -329,9 +331,7 @@ const ObservationPlanRequestLists = ({
         return <CircularProgress />;
       if (
         observationplanRequest?.observation_plans?.length &&
-        ["complete", "submitted to telescope queue"].includes(
-          observationplanRequest?.observation_plans[0]?.status,
-        ) &&
+        isQueuedOrComplete(observationplanRequest?.observation_plans[0]?.status) &&
         observationplanRequest?.observation_plans[0]?.statistics?.length &&
         observationplanRequest?.observation_plans[0]?.statistics[0]?.statistics
           ?.num_observations === 0
@@ -352,8 +352,7 @@ const ObservationPlanRequestLists = ({
             </Button>
           )}
           {implementsRemove &&
-            observationplanRequest.status ===
-              "submitted to telescope queue" && (
+            isQueuedAtFacility(observationplanRequest.status) && (
               <Button
                 secondary
                 onClick={() => handleRemove(observationplanRequest.id)}
@@ -479,7 +478,7 @@ const ObservationPlanRequestLists = ({
             color={
               params.value === "complete"
                 ? "success"
-                : params.value === "submitted to telescope queue"
+                : isQueuedAtFacility(params.value)
                   ? "warning"
                   : "default"
             }
@@ -506,11 +505,7 @@ const ObservationPlanRequestLists = ({
         sortable: false,
         renderCell: (params: any) => {
           const observationplanRequest = params.row;
-          if (
-            !["complete", "submitted to telescope queue"].includes(
-              observationplanRequest?.status,
-            )
-          ) {
+          if (!isQueuedOrComplete(observationplanRequest?.status)) {
             return null;
           }
           return (

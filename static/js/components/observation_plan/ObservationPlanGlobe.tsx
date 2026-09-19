@@ -7,6 +7,7 @@ import { useDeleteObservationPlanFieldsMutation } from "../../ducks/gcnEvent";
 import { useGetLocalizationQuery } from "../../ducks/localization";
 import { GET } from "../../API";
 import Button from "../Button";
+import { isQueuedOrComplete } from "./observationPlanStatus";
 
 const LocalizationPlot = lazy(() => import("../localization/LocalizationPlot"));
 
@@ -94,11 +95,7 @@ const ObservationPlanGlobe = ({
         setFetchFailed(true);
       }
     };
-    if (
-      ["complete", "submitted to telescope queue"].includes(
-        observationplanRequest?.status as string,
-      )
-    ) {
+    if (isQueuedOrComplete(observationplanRequest?.status)) {
       fetchObsList();
     }
     return () => {
