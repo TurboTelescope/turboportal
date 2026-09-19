@@ -990,6 +990,14 @@ class ObservationPlanRequestPostResponse(BaseModel):
     ids: list[int] = Field(description="New observation plan request IDs")
 
 
+class ObservationPlanRequestPutBody(BaseModel):
+    """Status-only update body for an observation plan request."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: str = Field(description="The new status of the request.")
+
+
 class ObservationPlanRequestHandler(BaseHandler):
     @auth_or_token
     async def post(
@@ -1403,6 +1411,60 @@ class ObservationPlanRequestHandler(BaseHandler):
                 )
 
             await api.delete(observation_plan_request, session)
+
+            self.push_all(
+                action="skyportal/REFRESH_GCNEVENT_OBSERVATION_PLAN_REQUESTS",
+                payload={"gcnEvent_dateobs": dateobs},
+            )
+
+            return self.success()
+
+    @permissions(["Manage observation plans"])
+    async def put(
+        self,
+        observation_plan_request_id: int,
+        *,
+        body: ObservationPlanRequestPutBody = None,
+    ):
+        """
+        ---
+        summary: Update an observation plan request's status
+        description: Status-only update; does not touch the facility API or plan contents.
+        tags:
+          - observation plan requests
+        responses:
+          200:
+            content:
+              application/json:
+                schema: Success
+          400:
+            content:
+              application/json:
+                schema: Error
+        """
+        body = self.parse_body(ObservationPlanRequestPutBody)
+
+        try:
+            observation_plan_request_id_int = int(observation_plan_request_id)
+        except (TypeError, ValueError):
+            return self.error(
+                f"Invalid observation_plan_request_id: {observation_plan_request_id}"
+            )
+
+        async with self.AsyncSession() as session:
+            observation_plan_request = await session.scalar(
+                ObservationPlanRequest.select(session.user_or_token, mode="update")
+                .where(ObservationPlanRequest.id == observation_plan_request_id_int)
+                .options(joinedload(ObservationPlanRequest.gcnevent))
+            )
+            if observation_plan_request is None:
+                return self.error(
+                    f"Cannot find ObservationPlanRequest with ID: {observation_plan_request_id}"
+                )
+
+            dateobs = observation_plan_request.gcnevent.dateobs
+            observation_plan_request.status = body.status
+            await session.commit()
 
             self.push_all(
                 action="skyportal/REFRESH_GCNEVENT_OBSERVATION_PLAN_REQUESTS",
