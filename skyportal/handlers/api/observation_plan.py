@@ -94,6 +94,10 @@ from ...models import (
 from ...models.schema import ObservationPlanPost
 from ...utils.earthquake import COUNTRIES_FILE
 from ...utils.naive_datetime import utcnow_naive
+from ...utils.observation_plan_status import (
+    QUEUED_AT_FACILITY,
+    is_queued_at_facility,
+)
 from ...utils.parse import get_page_and_n_per_page
 from ...utils.simsurvey import get_simsurvey_parameters, random_parameters_notheta
 from ..base import BaseHandler
@@ -252,7 +256,7 @@ async def send_observation_plan(
                 == observation_plan_request.gcnevent_id,
                 ObservationPlanRequest.allocation_id
                 == observation_plan_request.allocation_id,
-                ObservationPlanRequest.status == "submitted to telescope queue",
+                ObservationPlanRequest.status.in_(QUEUED_AT_FACILITY),
             )
         )
         if existing_obs_plan_requests:
@@ -1404,8 +1408,7 @@ class ObservationPlanRequestHandler(BaseHandler):
             if not api.implements()["delete"]:
                 return self.error("Cannot delete observation plans on this instrument.")
 
-            # if the status of the plan is "submitted to telescope queue", don't allow deletion
-            if observation_plan_request.status == "submitted to telescope queue":
+            if is_queued_at_facility(observation_plan_request.status):
                 return self.error(
                     "Cannot delete observation plan sent to the telescope queue."
                 )
