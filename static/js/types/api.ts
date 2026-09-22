@@ -982,7 +982,47 @@ export interface paths {
         };
         options?: never;
         head?: never;
-        patch?: never;
+        /**
+         * Re-share an analysis with a set of groups
+         * @description <b>Permission(s) required:</b> <em>Run Analyses (or System admin)</em><br><br>Change which groups can see an existing analysis and its annotation,
+         *     e.g. share a privately-run fit with a group later, or make it private
+         *     again by scoping it to only the requester's single-user group. Author
+         *     only.
+         */
+        patch: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    analysis_resource_type: string;
+                    analysis_id: number;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["AnalysisPatchBody"];
+                };
+            };
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Success"];
+                    };
+                };
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
         trace?: never;
     };
     "/api/{analysis_resource_type}/analysis/{obj_id_path}": {
@@ -1192,7 +1232,47 @@ export interface paths {
         };
         options?: never;
         head?: never;
-        patch?: never;
+        /**
+         * Re-share an analysis with a set of groups
+         * @description <b>Permission(s) required:</b> <em>Run Analyses (or System admin)</em><br><br>Change which groups can see an existing analysis and its annotation,
+         *     e.g. share a privately-run fit with a group later, or make it private
+         *     again by scoping it to only the requester's single-user group. Author
+         *     only.
+         */
+        patch: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    analysis_resource_type: string;
+                    analysis_id: number;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["AnalysisPatchBody"];
+                };
+            };
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Success"];
+                    };
+                };
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
         trace?: never;
     };
     "/api/{analysis_resource_type}/analysis/{analysis_id}/{product_type}/{plot_number}": {
@@ -3856,7 +3936,43 @@ export interface paths {
         };
         options?: never;
         head?: never;
-        patch?: never;
+        /**
+         * Update a default follow-up request
+         * @description Update a default follow-up request in place, leaving the fields that were not supplied untouched.
+         */
+        patch: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    default_followup_request_id: number;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["DefaultFollowupRequestPatchBody"];
+                };
+            };
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Success"];
+                    };
+                };
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
         trace?: never;
     };
     "/api/default_followup_request": {
@@ -16790,6 +16906,61 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/sources/{obj_id}/annotations/alma": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Add ALMA archive annotations
+         * @description Ask the ALMA Science Archive what it holds at this source's position
+         *     and post a summary of the coverage as an annotation. Records the
+         *     dataset identifiers too, which is what an ALMA reduction needs.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description ID of the object to retrieve the Vizier crossmatch for */
+                    obj_id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["ALMAQueryBody"];
+                };
+            };
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Success"];
+                    };
+                };
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/sources/{obj_id}/annotations/gaia": {
         parameters: {
             query?: never;
@@ -18028,6 +18199,70 @@ export interface paths {
         };
         trace?: never;
     };
+    "/api/data_sharing/bulk": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Bulk-share spectra/photometry with a group
+         * @description <b>Permission(s) required:</b> <em>System admin (or System admin)</em><br><br>Grant (or revoke) a target group's access to every spectrum and/or
+         *     photometry point selected either by a source group (`from_group_id`)
+         *     or by a set of objects (`obj_ids`), in one set-based operation.
+         *     Additive and idempotent: it only inserts or deletes group
+         *     associations and never touches the data itself. The supported way to
+         *     re-expose narrowly-shared legacy/imported data collaboration-wide.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": {
+                        /** @description Source group; mutually exclusive with obj_ids. */
+                        from_group_id?: number;
+                        /** @description Source objects; mutually exclusive with from_group_id. */
+                        obj_ids?: string[];
+                        to_group_id: number;
+                        data_types?: ("spectra" | "photometry")[];
+                        /** @enum {string} */
+                        action?: "add" | "remove";
+                    };
+                };
+            };
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Success"];
+                    };
+                };
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/spatial_catalog/ascii": {
         parameters: {
             query?: never;
@@ -18285,6 +18520,56 @@ export interface paths {
             };
         };
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/spectra/{spectrum_id}/groups/{group_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Remove a group from a spectrum
+         * @description <b>Permission(s) required:</b> <em>System admin (or System admin)</em><br><br>Revoke a single group's access to one spectrum. Used to undo an
+         *     accidental over-share; refuses to remove a spectrum's only group.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    spectrum_id: string;
+                    group_id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Success"];
+                    };
+                };
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
         options?: never;
         head?: never;
         patch?: never;
@@ -19524,6 +19809,12 @@ export interface paths {
                     isRoid?: boolean | null;
                     /** @description Only SuperObjs linking this Obj */
                     objID?: string | null;
+                    /** @description Include each linked Obj's thumbnails and annotations. A scanning view needs them; a plain listing does not, and they cost a query each. */
+                    includeEpochs?: boolean;
+                    /** @description Page number, starting at 1. */
+                    pageNumber?: number;
+                    /** @description SuperObjs per page, capped at 500. */
+                    numPerPage?: number;
                 };
                 header?: never;
                 path?: never;
@@ -20018,6 +20309,16 @@ export interface paths {
                                  *     is enabled in current deployment.
                                  */
                                 invitationsEnabled?: boolean;
+                                /**
+                                 * @description Boolean indicating whether account applications are
+                                 *     enabled in current deployment.
+                                 */
+                                userApplicationsEnabled?: boolean;
+                                /**
+                                 * @description Boolean indicating whether the requesting user may
+                                 *     endorse or decline account applications.
+                                 */
+                                canDecideUserApplications?: boolean;
                                 /**
                                  * @description URL preamble used for forwarding slack notifications.
                                  *     The default is "https://hooks.slack.com/".
@@ -21353,7 +21654,46 @@ export interface paths {
         };
         options?: never;
         head?: never;
-        patch?: never;
+        /**
+         * Reorder the coauthors of an external sharing service
+         * @description <b>Permission(s) required:</b> <em>Manage sharing services (or System admin)</em><br><br>Reorder the coauthors of an external sharing service, the order is the one used to publish
+         */
+        patch: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description ID of the external sharing service */
+                    sharing_service_id: number;
+                    /** @description Unused, the order is given in the body */
+                    user_id: number;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["SharingServiceCoauthorPatchBody"];
+                };
+            };
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Success"];
+                    };
+                };
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
         trace?: never;
     };
     "/api/sharing_service/{sharing_service_id}/group/{group_id}": {
@@ -21771,6 +22111,213 @@ export interface paths {
         };
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/user_applications/{application_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get an account application
+         * @description Retrieve an account application
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    application_id: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Success"];
+                    };
+                };
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        /**
+         * Delete an account application
+         * @description Delete an account application
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    application_id: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Success"];
+                    };
+                };
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        options?: never;
+        head?: never;
+        /**
+         * Endorse or decline an account application
+         * @description Endorsing issues the invitation the applicant signs up with, and emails
+         *     it to them. Groups are limited to those the endorser belongs to.
+         */
+        patch: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    application_id: number;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["UserApplicationPatchBody"];
+                };
+            };
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Success"];
+                    };
+                };
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        trace?: never;
+    };
+    "/api/user_applications": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get account applications
+         * @description Retrieve account applications awaiting endorsement
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description Only return applications with this status. */
+                    status?: "pending" | "endorsed" | "declined" | null;
+                    /** @description Only return applications naming the requesting user as endorser. */
+                    mine?: boolean;
+                    /** @description Number of applications per paginated request. */
+                    numPerPage?: number;
+                    /** @description Page number for paginated results. */
+                    pageNumber?: number;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Success"];
+                    };
+                };
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        /**
+         * Apply for an account
+         * @description Submit an application for an account, to be endorsed by an existing
+         *     user. Open to unauthenticated callers.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["UserApplicationPostBody"];
+                };
+            };
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Success"];
+                    };
+                };
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
         delete?: never;
         options?: never;
         head?: never;
@@ -22977,6 +23524,44 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Display the account application form
+         * @description Display the form for applying for an account
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/html": string;
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -23139,6 +23724,7 @@ export interface components {
         AnalysisService: {
             readonly groups?: components["schemas"]["Group"][];
             readonly obj_analyses?: components["schemas"]["ObjAnalysis"][];
+            readonly gcnevent_analyses?: components["schemas"]["GcnEventAnalysis"][];
             readonly default_analyses?: components["schemas"]["DefaultAnalysis"][];
             /** @description Unique name/identifier of the analysis service. */
             name: string;
@@ -23165,10 +23751,10 @@ export interface components {
             _authinfo?: string | null;
             enabled?: boolean;
             /**
-             * @description Type of analysis. One of: 'lightcurve_fitting', 'spectrum_fitting', 'meta_analysis'
+             * @description Type of analysis. One of: 'lightcurve_fitting', 'spectrum_fitting', 'meta_analysis', 'gw_search', 'period_finding'
              * @enum {string}
              */
-            analysis_type: "lightcurve_fitting" | "spectrum_fitting" | "meta_analysis";
+            analysis_type: "lightcurve_fitting" | "spectrum_fitting" | "meta_analysis" | "gw_search" | "period_finding";
             /** @description List of allowed_analysis_input_types required by the service. This data will be assembled and sent over to the analysis service. */
             input_data_types?: string[] | null;
             /** @description Max time in seconds to wait for the analysis service to complete. */
@@ -23197,6 +23783,7 @@ export interface components {
         AnalysisServiceNoID: {
             readonly groups?: components["schemas"]["Group"][];
             readonly obj_analyses?: components["schemas"]["ObjAnalysis"][];
+            readonly gcnevent_analyses?: components["schemas"]["GcnEventAnalysis"][];
             readonly default_analyses?: components["schemas"]["DefaultAnalysis"][];
             /** @description Unique name/identifier of the analysis service. */
             name: string;
@@ -23223,10 +23810,10 @@ export interface components {
             _authinfo?: string | null;
             enabled?: boolean;
             /**
-             * @description Type of analysis. One of: 'lightcurve_fitting', 'spectrum_fitting', 'meta_analysis'
+             * @description Type of analysis. One of: 'lightcurve_fitting', 'spectrum_fitting', 'meta_analysis', 'gw_search', 'period_finding'
              * @enum {string}
              */
-            analysis_type: "lightcurve_fitting" | "spectrum_fitting" | "meta_analysis";
+            analysis_type: "lightcurve_fitting" | "spectrum_fitting" | "meta_analysis" | "gw_search" | "period_finding";
             /** @description List of allowed_analysis_input_types required by the service. This data will be assembled and sent over to the analysis service. */
             input_data_types?: string[] | null;
             /** @description Max time in seconds to wait for the analysis service to complete. */
@@ -24770,9 +25357,12 @@ export interface components {
             show_corner?: boolean;
             /** @description Optional parameters that are passed to the analysis service */
             default_analysis_parameters?: string | null;
+            /** @description Resource this default triggers on: 'obj' (classifications) or 'gcn_event' (incoming GCN triggers). */
+            analysis_resource_type?: string;
             /**
              * @description JSONB column that defines the criteria for which this default analysis will be triggered.
-             *                 Example: {"classifications": {"name": "Kilonova", "probability": 0.9}}
+             *                 For 'obj': {"classifications": [{"name": "Kilonova", "probability": 0.9}]}.
+             *                 For 'gcn_event': {"gcn_tags": ["GRB"], "notice_types": [...]} (either, matched as OR).
              */
             source_filter: {
                 [key: string]: unknown;
@@ -24814,9 +25404,12 @@ export interface components {
             show_corner?: boolean;
             /** @description Optional parameters that are passed to the analysis service */
             default_analysis_parameters?: string | null;
+            /** @description Resource this default triggers on: 'obj' (classifications) or 'gcn_event' (incoming GCN triggers). */
+            analysis_resource_type?: string;
             /**
              * @description JSONB column that defines the criteria for which this default analysis will be triggered.
-             *                 Example: {"classifications": {"name": "Kilonova", "probability": 0.9}}
+             *                 For 'obj': {"classifications": [{"name": "Kilonova", "probability": 0.9}]}.
+             *                 For 'gcn_event': {"gcn_tags": ["GRB"], "notice_types": [...]} (either, matched as OR).
              */
             source_filter: {
                 [key: string]: unknown;
@@ -26356,6 +26949,7 @@ export interface components {
             readonly summaries?: components["schemas"]["GcnSummary"][];
             readonly _tags?: components["schemas"]["GcnTag"][];
             readonly localizations?: components["schemas"]["Localization"][];
+            readonly gcnevent_analyses?: components["schemas"]["GcnEventAnalysis"][];
             readonly observationplan_requests?: components["schemas"]["ObservationPlanRequest"][];
             readonly survey_efficiency_analyses?: components["schemas"]["SurveyEfficiencyForObservations"][];
             readonly comments?: components["schemas"]["CommentOnGCN"][];
@@ -26411,6 +27005,146 @@ export interface components {
             status: "success";
             message?: string;
             data?: components["schemas"]["GcnEvent"][];
+        };
+        GcnEventAnalysis: {
+            /** @description The GcnEventAnalysis's GcnEvent. */
+            readonly gcnevent?: components["schemas"]["GcnEvent"];
+            /** @description Annotation's author. */
+            readonly author?: components["schemas"]["User"];
+            /** @description Analysis Service associated with this analysis. */
+            readonly analysis_service?: components["schemas"]["AnalysisService"];
+            readonly groups?: components["schemas"]["Group"][];
+            /**
+             * Format: date-time
+             * @description UTC event timestamp of the GcnEventAnalysis's GcnEvent.
+             */
+            dateobs: string;
+            /** @description Unique object identifier. */
+            id?: number;
+            /** @description Unique identifier for this analysis result. */
+            _unique_id?: string;
+            /** @description MD5sum hash of the data to be saved to file. Helps identify duplicate results. */
+            hash?: string | null;
+            /** @description full name of the file path where the data is saved. */
+            _full_name?: string | null;
+            /** @description Whether to render the parameters of this analysis */
+            show_parameters?: boolean;
+            /** @description Whether to render the plots of this analysis */
+            show_plots?: boolean;
+            /** @description Whether to render the corner plots of this analysis */
+            show_corner?: boolean;
+            /** @description Optional parameters that are passed to the analysis service */
+            analysis_parameters?: string | null;
+            /** @description Optional filters that are applied to the input data that is passed to the analysis service */
+            input_filters?: string | null;
+            /** @description ID of the Annotation author's User instance. */
+            author_id: number;
+            /** @description ID of the associated analysis service. */
+            analysis_service_id: number;
+            /**
+             * Format: date-time
+             * @description Time after which the webhook is invalid. Default: 1 day from now.
+             */
+            invalid_after?: string;
+            /** @description Unique identifier for this webhook. */
+            token?: string;
+            /** @description url for internal API to handle the incoming callback. */
+            handled_by_url: string;
+            /**
+             * @description Status of the Webhook. One of: 'queued', 'pending', 'completed', 'failure', 'cancelled', 'timed_out'.
+             * @enum {string}
+             */
+            status: "queued" | "pending" | "completed" | "failure" | "cancelled" | "timed_out";
+            /** @description How long did this take to run and return this webhook? */
+            duration?: number | null;
+            /**
+             * Format: date-time
+             * @description When was the last time this webhook was accessed?
+             */
+            last_activity?: string | null;
+            /** @description A message describing the status of the webhook. */
+            status_message?: string | null;
+        };
+        SingleGcnEventAnalysis: {
+            /** @enum {string} */
+            status: "success";
+            message?: string;
+            data?: components["schemas"]["GcnEventAnalysis"];
+        };
+        ArrayOfGcnEventAnalysiss: {
+            /** @enum {string} */
+            status: "success";
+            message?: string;
+            data?: components["schemas"]["GcnEventAnalysis"][];
+        };
+        GcnEventAnalysisNoID: {
+            /** @description The GcnEventAnalysis's GcnEvent. */
+            readonly gcnevent?: components["schemas"]["GcnEvent"];
+            /** @description Annotation's author. */
+            readonly author?: components["schemas"]["User"];
+            /** @description Analysis Service associated with this analysis. */
+            readonly analysis_service?: components["schemas"]["AnalysisService"];
+            readonly groups?: components["schemas"]["Group"][];
+            /**
+             * Format: date-time
+             * @description UTC event timestamp of the GcnEventAnalysis's GcnEvent.
+             */
+            dateobs: string;
+            /** @description Unique identifier for this analysis result. */
+            _unique_id?: string;
+            /** @description MD5sum hash of the data to be saved to file. Helps identify duplicate results. */
+            hash?: string | null;
+            /** @description full name of the file path where the data is saved. */
+            _full_name?: string | null;
+            /** @description Whether to render the parameters of this analysis */
+            show_parameters?: boolean;
+            /** @description Whether to render the plots of this analysis */
+            show_plots?: boolean;
+            /** @description Whether to render the corner plots of this analysis */
+            show_corner?: boolean;
+            /** @description Optional parameters that are passed to the analysis service */
+            analysis_parameters?: string | null;
+            /** @description Optional filters that are applied to the input data that is passed to the analysis service */
+            input_filters?: string | null;
+            /** @description ID of the Annotation author's User instance. */
+            author_id: number;
+            /** @description ID of the associated analysis service. */
+            analysis_service_id: number;
+            /**
+             * Format: date-time
+             * @description Time after which the webhook is invalid. Default: 1 day from now.
+             */
+            invalid_after?: string;
+            /** @description Unique identifier for this webhook. */
+            token?: string;
+            /** @description url for internal API to handle the incoming callback. */
+            handled_by_url: string;
+            /**
+             * @description Status of the Webhook. One of: 'queued', 'pending', 'completed', 'failure', 'cancelled', 'timed_out'.
+             * @enum {string}
+             */
+            status: "queued" | "pending" | "completed" | "failure" | "cancelled" | "timed_out";
+            /** @description How long did this take to run and return this webhook? */
+            duration?: number | null;
+            /**
+             * Format: date-time
+             * @description When was the last time this webhook was accessed?
+             */
+            last_activity?: string | null;
+            /** @description A message describing the status of the webhook. */
+            status_message?: string | null;
+        };
+        SingleGcnEventAnalysisNoID: {
+            /** @enum {string} */
+            status: "success";
+            message?: string;
+            data?: components["schemas"]["GcnEventAnalysisNoID"];
+        };
+        ArrayOfGcnEventAnalysisNoIDs: {
+            /** @enum {string} */
+            status: "success";
+            message?: string;
+            data?: components["schemas"]["GcnEventAnalysisNoID"][];
         };
         GcnEventAssociation: {
             /** @description The earlier GcnEvent. */
@@ -26709,6 +27443,7 @@ export interface components {
             readonly summaries?: components["schemas"]["GcnSummary"][];
             readonly _tags?: components["schemas"]["GcnTag"][];
             readonly localizations?: components["schemas"]["Localization"][];
+            readonly gcnevent_analyses?: components["schemas"]["GcnEventAnalysis"][];
             readonly observationplan_requests?: components["schemas"]["ObservationPlanRequest"][];
             readonly survey_efficiency_analyses?: components["schemas"]["SurveyEfficiencyForObservations"][];
             readonly comments?: components["schemas"]["CommentOnGCN"][];
@@ -27783,6 +28518,44 @@ export interface components {
             status: "success";
             message?: string;
             data?: components["schemas"]["GroupGcnEvent"][];
+        };
+        GroupGcnEventAnalysis: {
+            readonly group?: components["schemas"]["Group"];
+            readonly gcneventanalysis?: components["schemas"]["GcnEventAnalysis"];
+            group_id: number;
+            gcnevent_analyse_id: number;
+            /** @description Unique object identifier. */
+            id?: number;
+        };
+        SingleGroupGcnEventAnalysis: {
+            /** @enum {string} */
+            status: "success";
+            message?: string;
+            data?: components["schemas"]["GroupGcnEventAnalysis"];
+        };
+        ArrayOfGroupGcnEventAnalysiss: {
+            /** @enum {string} */
+            status: "success";
+            message?: string;
+            data?: components["schemas"]["GroupGcnEventAnalysis"][];
+        };
+        GroupGcnEventAnalysisNoID: {
+            readonly group?: components["schemas"]["Group"];
+            readonly gcneventanalysis?: components["schemas"]["GcnEventAnalysis"];
+            group_id: number;
+            gcnevent_analyse_id: number;
+        };
+        SingleGroupGcnEventAnalysisNoID: {
+            /** @enum {string} */
+            status: "success";
+            message?: string;
+            data?: components["schemas"]["GroupGcnEventAnalysisNoID"];
+        };
+        ArrayOfGroupGcnEventAnalysisNoIDs: {
+            /** @enum {string} */
+            status: "success";
+            message?: string;
+            data?: components["schemas"]["GroupGcnEventAnalysisNoID"][];
         };
         GroupGcnEventNoID: {
             readonly group?: components["schemas"]["Group"];
@@ -35674,6 +36447,7 @@ export interface components {
             _tns_altdata?: string | null;
             /** @description Whether to publish objects that already exist in TNS but not reported under this internal name (e.g., reported by another survey). */
             publish_existing_tns_objects?: boolean | null;
+            _mpc_altdata?: string | null;
             /** @description Unique object identifier. */
             id?: number;
         };
@@ -35694,6 +36468,8 @@ export interface components {
             readonly sharing_service?: components["schemas"]["SharingService"];
             sharing_service_id: number;
             user_id: number;
+            /** @description Position of the coauthor in the published author list, ascending. */
+            order?: number;
             /** @description Unique object identifier. */
             id?: number;
         };
@@ -35714,6 +36490,8 @@ export interface components {
             readonly sharing_service?: components["schemas"]["SharingService"];
             sharing_service_id: number;
             user_id: number;
+            /** @description Position of the coauthor in the published author list, ascending. */
+            order?: number;
         };
         SingleSharingServiceCoauthorNoID: {
             /** @enum {string} */
@@ -35738,6 +36516,7 @@ export interface components {
             owner?: boolean;
             auto_share_to_tns?: boolean;
             auto_share_to_hermes?: boolean;
+            auto_share_to_mpc?: boolean;
             auto_sharing_allow_bots?: boolean;
             /** @description Unique object identifier. */
             id?: number;
@@ -35805,6 +36584,7 @@ export interface components {
             owner?: boolean;
             auto_share_to_tns?: boolean;
             auto_share_to_hermes?: boolean;
+            auto_share_to_mpc?: boolean;
             auto_sharing_allow_bots?: boolean;
         };
         SingleSharingServiceGroupNoID: {
@@ -35848,6 +36628,7 @@ export interface components {
             _tns_altdata?: string | null;
             /** @description Whether to publish objects that already exist in TNS but not reported under this internal name (e.g., reported by another survey). */
             publish_existing_tns_objects?: boolean | null;
+            _mpc_altdata?: string | null;
         };
         SingleSharingServiceNoID: {
             /** @enum {string} */
@@ -35887,6 +36668,20 @@ export interface components {
             } | null;
             /** @description Payload to publish to TNS. */
             tns_payload?: {
+                [key: string]: unknown;
+            } | null;
+            /** @description Whether to publish to the Minor Planet Center or not. */
+            publish_to_mpc?: boolean;
+            /** @description Status of the MPC submission. */
+            mpc_status?: string | null;
+            /** @description Designation or tracking id the MPC submission was filed under. */
+            mpc_submission_id?: string | null;
+            /** @description Serialized HTTP response from the MPC. */
+            mpc_response?: {
+                [key: string]: unknown;
+            } | null;
+            /** @description ADES payload submitted to the MPC. */
+            mpc_payload?: {
                 [key: string]: unknown;
             } | null;
             /** @description Whether to publish to Hermes or not. */
@@ -35952,6 +36747,20 @@ export interface components {
             } | null;
             /** @description Payload to publish to TNS. */
             tns_payload?: {
+                [key: string]: unknown;
+            } | null;
+            /** @description Whether to publish to the Minor Planet Center or not. */
+            publish_to_mpc?: boolean;
+            /** @description Status of the MPC submission. */
+            mpc_status?: string | null;
+            /** @description Designation or tracking id the MPC submission was filed under. */
+            mpc_submission_id?: string | null;
+            /** @description Serialized HTTP response from the MPC. */
+            mpc_response?: {
+                [key: string]: unknown;
+            } | null;
+            /** @description ADES payload submitted to the MPC. */
+            mpc_payload?: {
                 [key: string]: unknown;
             } | null;
             /** @description Whether to publish to Hermes or not. */
@@ -38187,6 +38996,108 @@ export interface components {
             message?: string;
             data?: components["schemas"]["UserACLNoID"][];
         };
+        UserApplication: {
+            /** @description The User the applicant named as their endorser. */
+            readonly endorser?: components["schemas"]["User"];
+            /** @description The User who endorsed or declined the application. */
+            readonly endorsed_by?: components["schemas"]["User"];
+            /** @description The Invitation the endorsement issued. */
+            readonly invitation?: components["schemas"]["Invitation"];
+            /** @description Applicant's first name. */
+            first_name: string;
+            /** @description Applicant's last name. */
+            last_name: string;
+            /** @description Address the invitation is sent to once the application is endorsed. */
+            contact_email: string;
+            /** @description Applicant's stated institution or affiliation. */
+            affiliation?: string | null;
+            /** @description Applicant's stated reason for wanting access. */
+            statement?: string | null;
+            /** @description Address of the endorser the applicant named, as typed by them. */
+            endorser_email?: string | null;
+            /** @description ID of the User matching `endorser_email`, if the address is one we know. */
+            endorser_id?: number | null;
+            /**
+             * @description Application status. Can be one of either 'pending', 'endorsed', or 'declined'.
+             * @enum {string}
+             */
+            status?: "pending" | "endorsed" | "declined";
+            /** @description ID of the User who endorsed or declined the application. */
+            endorsed_by_id?: number | null;
+            /**
+             * Format: date-time
+             * @description UTC time the application was endorsed or declined.
+             */
+            decided_at?: string | null;
+            /** @description Why the application was declined. */
+            decline_reason?: string | null;
+            /** @description ID of the Invitation the endorsement issued. */
+            invitation_id?: number | null;
+            /** @description Unique object identifier. */
+            id?: number;
+        };
+        SingleUserApplication: {
+            /** @enum {string} */
+            status: "success";
+            message?: string;
+            data?: components["schemas"]["UserApplication"];
+        };
+        ArrayOfUserApplications: {
+            /** @enum {string} */
+            status: "success";
+            message?: string;
+            data?: components["schemas"]["UserApplication"][];
+        };
+        UserApplicationNoID: {
+            /** @description The User the applicant named as their endorser. */
+            readonly endorser?: components["schemas"]["User"];
+            /** @description The User who endorsed or declined the application. */
+            readonly endorsed_by?: components["schemas"]["User"];
+            /** @description The Invitation the endorsement issued. */
+            readonly invitation?: components["schemas"]["Invitation"];
+            /** @description Applicant's first name. */
+            first_name: string;
+            /** @description Applicant's last name. */
+            last_name: string;
+            /** @description Address the invitation is sent to once the application is endorsed. */
+            contact_email: string;
+            /** @description Applicant's stated institution or affiliation. */
+            affiliation?: string | null;
+            /** @description Applicant's stated reason for wanting access. */
+            statement?: string | null;
+            /** @description Address of the endorser the applicant named, as typed by them. */
+            endorser_email?: string | null;
+            /** @description ID of the User matching `endorser_email`, if the address is one we know. */
+            endorser_id?: number | null;
+            /**
+             * @description Application status. Can be one of either 'pending', 'endorsed', or 'declined'.
+             * @enum {string}
+             */
+            status?: "pending" | "endorsed" | "declined";
+            /** @description ID of the User who endorsed or declined the application. */
+            endorsed_by_id?: number | null;
+            /**
+             * Format: date-time
+             * @description UTC time the application was endorsed or declined.
+             */
+            decided_at?: string | null;
+            /** @description Why the application was declined. */
+            decline_reason?: string | null;
+            /** @description ID of the Invitation the endorsement issued. */
+            invitation_id?: number | null;
+        };
+        SingleUserApplicationNoID: {
+            /** @enum {string} */
+            status: "success";
+            message?: string;
+            data?: components["schemas"]["UserApplicationNoID"];
+        };
+        ArrayOfUserApplicationNoIDs: {
+            /** @enum {string} */
+            status: "success";
+            message?: string;
+            data?: components["schemas"]["UserApplicationNoID"][];
+        };
         UserInvitation: {
             readonly user?: components["schemas"]["User"];
             readonly invitation?: components["schemas"]["Invitation"];
@@ -38682,6 +39593,12 @@ export interface components {
          */
         DefaultAnalysisPostBody: {
             /**
+             * Analysis Resource Type
+             * @description Resource this default triggers on: 'obj' (classifications) or 'gcn_event' (incoming GCN triggers).
+             * @default obj
+             */
+            analysis_resource_type: string;
+            /**
              * Default Analysis Parameters
              * @description Dictionary of parameters to be passed thru to the analysis.
              */
@@ -39096,6 +40013,17 @@ export interface components {
              * @default null
              */
             group_ids: number[] | null;
+        };
+        /**
+         * AnalysisPatchBody
+         * @description Request body for re-sharing an existing analysis with a set of groups.
+         */
+        AnalysisPatchBody: {
+            /**
+             * Group Ids
+             * @description Group IDs the analysis and its annotation should be visible to. Set to only the requester's single-user group to keep it private.
+             */
+            group_ids: number[];
         };
         /**
          * AssignmentPostBody
@@ -40159,6 +41087,121 @@ export interface components {
              */
             id: number;
         };
+        /**
+         * DefaultFollowupRequestPatchBody
+         * @description Fields to change on a default follow-up request; all are optional.
+         *
+         *     Constraint keys are merged into the stored constraints rather than
+         *     replacing them, so changing one leaves the rest intact.
+         */
+        DefaultFollowupRequestPatchBody: {
+            /**
+             * Payload
+             * @description Follow-up request payload.
+             * @default null
+             */
+            payload: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Allocation Id
+             * @description Follow-up request allocation ID.
+             * @default null
+             */
+            allocation_id: number | null;
+            /**
+             * Target Group Ids
+             * @description IDs of groups the results are shared with. Replaces the existing set.
+             * @default null
+             */
+            target_group_ids: number[] | null;
+            /**
+             * Default Followup Name
+             * @description Name of the default follow-up request.
+             * @default null
+             */
+            default_followup_name: string | null;
+            /**
+             * Source Filter
+             * @description Which sources this applies to. An absent name matches every object in the group.
+             * @default null
+             */
+            source_filter: ({
+                [key: string]: unknown;
+            } | string) | null;
+            /**
+             * Not If Duplicates
+             * @default null
+             */
+            not_if_duplicates: boolean | null;
+            /**
+             * Source Group Ids
+             * @default null
+             */
+            source_group_ids: number[] | null;
+            /**
+             * Ignore Source Group Ids
+             * @default null
+             */
+            ignore_source_group_ids: number[] | null;
+            /**
+             * Not If Classified
+             * @default null
+             */
+            not_if_classified: boolean | null;
+            /**
+             * Not If Spectra Exist
+             * @default null
+             */
+            not_if_spectra_exist: boolean | null;
+            /**
+             * Not If Tns Classified
+             * @default null
+             */
+            not_if_tns_classified: boolean | null;
+            /**
+             * Not If Tns Reported
+             * @default null
+             */
+            not_if_tns_reported: number | null;
+            /**
+             * Not If Assignment Exists
+             * @default null
+             */
+            not_if_assignment_exists: boolean | null;
+            /**
+             * Ignore Allocation Ids
+             * @default null
+             */
+            ignore_allocation_ids: number[] | null;
+            /**
+             * Radius
+             * @description Radius (arcsec) used when checking constraints.
+             * @default null
+             */
+            radius: number | null;
+            /**
+             * Priority Order
+             * @description One of 'asc' or 'desc'.
+             * @default null
+             */
+            priority_order: string | null;
+            /**
+             * Validity Days
+             * @default null
+             */
+            validity_days: number | null;
+            /**
+             * Comment
+             * @default null
+             */
+            comment: string | null;
+            /**
+             * Implements Update
+             * @default null
+             */
+            implements_update: boolean | null;
+        };
         /** DefaultGcnTagPostBody */
         DefaultGcnTagPostBody: {
             /**
@@ -40879,6 +41922,13 @@ export interface components {
              * @default null
              */
             channel: string | null;
+            /**
+             * Origin
+             * @description Optional workflow that created the comment.
+             * @default null
+             * @constant
+             */
+            origin: "scanning";
         };
         /**
          * CommentPostResponse
@@ -44676,13 +45726,37 @@ export interface components {
             search_radius: number;
         };
         /**
+         * ALMAQueryBody
+         * @description Request body for posting ALMA archive coverage annotations.
+         */
+        ALMAQueryBody: {
+            /**
+             * Crossmatchradius
+             * @description Search radius (in arcseconds) around the source. Default is 30.
+             * @default 30
+             */
+            crossmatchRadius: number | null;
+            /**
+             * Publiconly
+             * @description Only observations whose proprietary period has lapsed. Default is true.
+             * @default true
+             */
+            publicOnly: boolean | null;
+            /**
+             * Group Ids
+             * @description List of group IDs corresponding to which groups should be able to view annotation. Defaults to all of requesting user's groups.
+             * @default null
+             */
+            group_ids: number[] | null;
+        };
+        /**
          * GaiaQueryBody
          * @description Request body for posting Gaia cross-match annotations.
          */
         GaiaQueryBody: {
             /**
              * Catalog
-             * @description The name of the catalog key, associated with a catalog cross match, from which the data should be retrieved. Default is "gaiadr3.gaia_source".
+             * @description The name of the catalog key, associated with a catalog cross match, from which the data should be retrieved. Defaults to `cross_match.gaia.catalog` in the config.
              * @default gaiadr3.gaia_source
              */
             catalog: string;
@@ -46508,6 +47582,17 @@ export interface components {
             id: number;
         };
         /**
+         * SharingServiceCoauthorPatchBody
+         * @description Request body for reordering the coauthors of an external sharing service.
+         */
+        SharingServiceCoauthorPatchBody: {
+            /**
+             * User Ids
+             * @description IDs of all the coauthors of the sharing service, in the order they should be published
+             */
+            user_ids: number[];
+        };
+        /**
          * SharingServiceGroupPutBody
          * @description Request body for adding or editing a group of an external sharing service.
          */
@@ -46704,6 +47789,82 @@ export interface components {
              * @description New Sharing Service ID
              */
             id: number;
+        };
+        /**
+         * UserApplicationPostBody
+         * @description Request body for applying for an account.
+         */
+        UserApplicationPostBody: {
+            /**
+             * Firstname
+             * @description Applicant's first name.
+             */
+            firstName: string;
+            /**
+             * Lastname
+             * @description Applicant's last name.
+             */
+            lastName: string;
+            /**
+             * Email
+             * @description Address the invitation is sent to once the application is endorsed.
+             */
+            email: string;
+            /**
+             * Affiliation
+             * @description Applicant's institution or affiliation.
+             * @default null
+             */
+            affiliation: string | null;
+            /**
+             * Statement
+             * @description Why the applicant wants access.
+             * @default null
+             */
+            statement: string | null;
+            /**
+             * Endorseremail
+             * @description Address of an existing user the applicant asks to endorse them.
+             * @default null
+             */
+            endorserEmail: string | null;
+        };
+        /**
+         * UserApplicationPatchBody
+         * @description Request body for endorsing or declining an account application.
+         */
+        UserApplicationPatchBody: {
+            /**
+             * Status
+             * @description One of either 'endorsed' or 'declined'.
+             * @enum {string}
+             */
+            status: "endorsed" | "declined";
+            /**
+             * Streamids
+             * @description IDs of streams to grant the applicant. The endorser must have each of them, and they must cover every stream the chosen groups read. Omitted, the groups' own streams are granted.
+             * @default null
+             */
+            streamIDs: number[] | null;
+            /**
+             * Groupids
+             * @description IDs of groups to add the applicant to. The endorser must belong to each of them. Defaults to none, which still lands the applicant in the sitewide public group.
+             * @default null
+             */
+            groupIDs: number[] | null;
+            /**
+             * Role
+             * @description The role the new user will have in the system.
+             * @default Full user
+             * @enum {string}
+             */
+            role: "Full user" | "View only";
+            /**
+             * Declinereason
+             * @description Why the application was declined.
+             * @default null
+             */
+            declineReason: string | null;
         };
         /**
          * UserACLPostBody

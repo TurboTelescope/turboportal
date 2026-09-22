@@ -17,6 +17,7 @@ from skyportal.handlers.api import (
     AllocationHandler,
     AllocationObservationPlanHandler,
     AllocationReportHandler,
+    ALMAQueryHandler,
     AnalysisHandler,
     AnalysisProductsHandler,
     AnalysisServiceHandler,
@@ -41,6 +42,7 @@ from skyportal.handlers.api import (
     BrokerHandler,
     BrokerPhotometryHandler,
     BrokerSaveHandler,
+    BulkDataShareHandler,
     BulkDeleteCandidatesHandler,
     BulkDeletePhotometryHandler,
     BulkSpectraHandler,
@@ -216,6 +218,7 @@ from skyportal.handlers.api import (
     SpatialCatalogHandler,
     SpectrumASCIIFileHandler,
     SpectrumASCIIFileParser,
+    SpectrumGroupsHandler,
     SpectrumHandler,
     SpectrumRangeHandler,
     StatsHandler,
@@ -238,6 +241,7 @@ from skyportal.handlers.api import (
     ThumbnailPathHandler,
     UnsourcedFinderHandler,
     UserACLHandler,
+    UserApplicationHandler,
     UserHandler,
     UserObjListHandler,
     UserPublicProfileHandler,
@@ -273,6 +277,7 @@ from skyportal.handlers.api.internal import (
 )
 from skyportal.handlers.mcp import MCPHandler
 from skyportal.handlers.public import (
+    ApplyPageHandler,
     CachedSourceFinderHandler,
     ReleaseHandler,
     ReleaseSourcePageHandler,
@@ -281,7 +286,7 @@ from skyportal.handlers.public import (
 )
 
 from . import model_util, openapi
-from .models import DBSession, init_db
+from .models import db_engine, init_db
 from .utils.observability import setup_observability
 
 log = make_log("app_server")
@@ -315,6 +320,15 @@ skyportal_handlers = [
     (r"/api/(obj)/analysis(/[0-9]+)?", AnalysisHandler),
     (
         r"/api/(obj)/analysis(/[0-9]+)/(corner|results|plots)(/[0-9]+)?",
+        AnalysisProductsHandler,
+    ),
+    # GCN-event analyses: the resource id is a dateobs (has ':'/'T'), so match it
+    # broadly like the other /api/gcn_event routes. The trailing capture is the
+    # analysis_service_id on POST and the analysis_id on GET/DELETE.
+    (r"/api/(gcn_event)/(.*)/analysis(/[0-9]+)?", AnalysisHandler),
+    (r"/api/(gcn_event)/analysis(/[0-9]+)?", AnalysisHandler),
+    (
+        r"/api/(gcn_event)/analysis(/[0-9]+)/(corner|results|plots)(/[0-9]+)?",
         AnalysisProductsHandler,
     ),
     (r"/api/assignment(/.*)?", AssignmentHandler),
@@ -611,6 +625,7 @@ skyportal_handlers = [
         r"/api/(sources|spectra)/([0-9A-Za-z-_\.\+]+)/comments(/[0-9]+)/attachment.pdf",
         CommentAttachmentHandler,
     ),
+    (r"/api/sources(/[0-9A-Za-z-_\.\+]+)/annotations/alma", ALMAQueryHandler),
     (r"/api/sources(/[0-9A-Za-z-_\.\+]+)/annotations/gaia", GaiaQueryHandler),
     (r"/api/sources(/[0-9A-Za-z-_\.\+]+)/annotations/irsa", IRSAQueryWISEHandler),
     (r"/api/sources(/[0-9A-Za-z-_\.\+]+)/annotations/vizier", VizierQueryHandler),
@@ -628,9 +643,11 @@ skyportal_handlers = [
     (r"/api/source_exists(/.*)?", SourceExistsHandler),
     (r"/api/source_notifications", SourceNotificationHandler),
     (r"/api/source_groups(/.*)?", SourceGroupsHandler),
+    (r"/api/data_sharing/bulk", BulkDataShareHandler),
     (r"/api/spatial_catalog/ascii", SpatialCatalogASCIIFileHandler),
     (r"/api/spatial_catalog(/[0-9A-Za-z-_\.\+]+)?", SpatialCatalogHandler),
     (r"/api/spectra/bulk", BulkSpectraHandler),
+    (r"/api/spectra/([0-9]+)/groups/([0-9]+)", SpectrumGroupsHandler),
     (r"/api/spectra(/[0-9]+)?", SpectrumHandler),
     (r"/api/spectra/parse/ascii", SpectrumASCIIFileParser),
     (r"/api/spectra/ascii(/[0-9]+)?", SpectrumASCIIFileHandler),
@@ -693,6 +710,7 @@ skyportal_handlers = [
     ),
     (r"/api/sharing_service(/[0-9]+)?", SharingServiceHandler),
     (r"/api/unsourced_finder", UnsourcedFinderHandler),
+    (r"/api/user_applications(/[0-9]+)?", UserApplicationHandler),
     (r"/api/user/([0-9]+)/profile", UserPublicProfileHandler),
     (r"/api/user(/[0-9]+)/acls(/.*)?", UserACLHandler),
     (r"/api/user(/[0-9]+)/roles(/.*)?", UserRoleHandler),
@@ -700,7 +718,7 @@ skyportal_handlers = [
     (r"/api/weather(/.*)?", WeatherHandler),
     # strictly require uuid4 token for this unauthenticated endpoint
     (
-        r"/api/webhook/(obj)_analysis/([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})?",
+        r"/api/webhook/(obj|gcn_event)_analysis/([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})?",
         AnalysisWebhookHandler,
     ),
     # Public pages managed by the API.
@@ -759,6 +777,8 @@ skyportal_handlers = [
     (r"/public/reports/(gcn)(/[0-9]+)?(/.*)?", ReportHandler),
     (r"/public/finding_charts(?:/)?(.*)?", CachedSourceFinderHandler),
     (r"/public/.*", InvalidEndpointHandler),
+    # Account application form, for people who do not have an account yet.
+    (r"/apply(?:/)?", ApplyPageHandler),
     # Debug and logout pages.
     (r"/become_user(/.*)?", BecomeUserHandler),
     (r"/logout", LogoutHandler),
@@ -888,7 +908,7 @@ def make_app(cfg, baselayer_handlers, baselayer_settings, process=None, env=None
     # create_tables() is a no-op outside debug mode, so an unmigrated database
     # reaches this point empty and every later step fails on a missing table or
     # type -- once per worker, on every supervisor restart. Say so instead.
-    if not sa.inspect(DBSession.session_factory.kw["bind"]).has_table("users"):
+    if not sa.inspect(db_engine()).has_table("users"):
         raise RuntimeError(
             "No tables found in the database. Create the schema first: "
             "`make db_create_tables` (or `alembic upgrade head` where "

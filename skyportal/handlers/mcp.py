@@ -689,6 +689,7 @@ async def get_analysis(handler, args):
         "show_corner": _prop("boolean", "Show the corner/posterior plot."),
     },
     required=("obj_id", "analysis_service_id"),
+    writes=True,
 )
 async def run_analysis(handler, args):
     obj_id = args.pop("obj_id")
@@ -698,6 +699,35 @@ async def run_analysis(handler, args):
     return await handler.api(
         "POST", f"/api/obj/{obj_id}/analysis/{service_id}", body=args
     )
+
+
+@tool(
+    "get_comments",
+    "The discussion on a source. Comments are how people (and agents) record "
+    "findings on a source in SkyPortal.",
+    {"obj_id": _prop("string", "Source ID.")},
+    required=("obj_id",),
+)
+async def get_comments(handler, args):
+    return await handler.api("GET", f"/api/sources/{args['obj_id']}/comments")
+
+
+@tool(
+    "post_comment",
+    "Add a comment to a source, e.g. to record an LLM triage verdict and its "
+    "reasoning on the source's discussion thread. WRITE: this posts a visible "
+    "comment.",
+    {
+        "obj_id": _prop("string", "Source ID."),
+        "text": _prop("string", "The comment body (markdown allowed)."),
+        "group_ids": _GROUP_IDS,
+    },
+    required=("obj_id", "text"),
+    writes=True,
+)
+async def post_comment(handler, args):
+    obj_id = args.pop("obj_id")
+    return await handler.api("POST", f"/api/sources/{obj_id}/comments", body=args)
 
 
 @tool(
@@ -843,6 +873,7 @@ async def get_observation_plan_form(handler, args):
     },
     required=("allocation_id", "gcnevent_id", "localization_id", "payload"),
     passthrough="POST /api/observation_plan",
+    writes=True,
 )
 async def post_observation_plan(handler, args):
     if "queue_name" not in (args.get("payload") or {}):

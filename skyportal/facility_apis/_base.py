@@ -107,7 +107,7 @@ class _Base:
         else:
             try:
                 formSchema = custom_json_schema(instrument, user, **kwargs)
-            except Exception:
+            except Exception:  # noqa: BLE001
                 log(
                     f"{cls.__name__}.custom_json_schema failed for instrument "
                     f"{instrument.id} ({instrument.name}): {traceback.format_exc()}"

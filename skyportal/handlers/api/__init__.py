@@ -13,6 +13,7 @@ from .analysis import (
 )
 from .annotation import AnnotationHandler
 from .annotation_services import (
+    ALMAQueryHandler,
     DatalabQueryHandler,
     GaiaQueryHandler,
     IRSAQueryWISEHandler,
@@ -62,6 +63,7 @@ from .data_access_request import (
     DuplicateSchedulingHandler,
     ScheduledObservationsHandler,
 )
+from .data_sharing import BulkDataShareHandler, SpectrumGroupsHandler
 from .db_stats import StatsHandler, StatsHistoryHandler
 from .earthquake import (
     EarthquakeHandler,
@@ -268,6 +270,7 @@ from .user import (
     set_default_group,
     set_default_role,
 )
+from .user_application import UserApplicationHandler
 from .user_obj_list import UserObjListHandler
 from .weather import WeatherHandler
 from .webhook import AnalysisWebhookHandler

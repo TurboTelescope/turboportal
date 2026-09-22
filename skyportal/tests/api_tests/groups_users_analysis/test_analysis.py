@@ -1781,3 +1781,277 @@ def test_default_analysis_multiple_per_service(
     status, data = api("GET", url, token=analysis_token)
     assert status == 200
     assert len(data["data"]) == 2
+
+
+def test_patch_analysis_group_sharing(
+    analysis_service_token,
+    analysis_token,
+    view_only_token2,
+    user,
+    public_group,
+    public_source,
+):
+    name = str(uuid.uuid4())
+    post_data = {
+        "name": name,
+        "display_name": "sharing test service",
+        "description": "A test analysis service description",
+        "version": "1.0",
+        "contact_name": "Vera Rubin",
+        "contact_email": "vr@ls.st",
+        "url": f"http://localhost:{analysis_port}/analysis/demo_analysis",
+        "authentication_type": "none",
+        "analysis_type": "lightcurve_fitting",
+        "input_data_types": ["photometry", "redshift"],
+        "timeout": 60,
+        "group_ids": [public_group.id],
+    }
+    status, data = api(
+        "POST", "analysis_service", data=post_data, token=analysis_service_token
+    )
+    assert status == 200
+    analysis_service_id = data["data"]["id"]
+
+    # Run it privately: scope to the requester's single-user group only.
+    status, data = api(
+        "POST",
+        f"obj/{public_source.id}/analysis/{analysis_service_id}",
+        data={"group_ids": [user.single_user_group.id]},
+        token=analysis_token,
+    )
+    assert status == 200
+    analysis_id = data["data"].get("id")
+    assert analysis_id is not None
+
+    def analysis_group_ids():
+        status, data = api("GET", f"obj/analysis/{analysis_id}", token=analysis_token)
+        assert status == 200
+        return {g["id"] for g in data["data"]["groups"]}
+
+    assert analysis_group_ids() == {user.single_user_group.id}
+
+    # Share it with a group.
+    status, data = api(
+        "PATCH",
+        f"obj/analysis/{analysis_id}",
+        data={"group_ids": [public_group.id]},
+        token=analysis_token,
+    )
+    assert status == 200
+    assert analysis_group_ids() == {public_group.id}
+
+    # Make it private again.
+    status, data = api(
+        "PATCH",
+        f"obj/analysis/{analysis_id}",
+        data={"group_ids": [user.single_user_group.id]},
+        token=analysis_token,
+    )
+    assert status == 200
+    assert analysis_group_ids() == {user.single_user_group.id}
+
+    # A different user cannot change its sharing (author only / no access).
+    status, data = api(
+        "PATCH",
+        f"obj/analysis/{analysis_id}",
+        data={"group_ids": [public_group.id]},
+        token=view_only_token2,
+    )
+    assert status in (400, 401, 403)
+    assert analysis_group_ids() == {user.single_user_group.id}
+
+
+def test_summary_analysis_is_refused_on_a_gcnevent(
+    analysis_service_token, analysis_token, public_group, public_gcnevent
+):
+    """A summary is written to a source's summary history, which a GCN event has
+    none of, so the run is refused rather than left to fail on the webhook."""
+    name = str(uuid.uuid4())
+    post_data = {
+        "name": name,
+        "display_name": "test summary analysis service",
+        "description": "A test summary analysis service",
+        "version": "1.0",
+        "contact_name": "Vera Rubin",
+        "contact_email": "vr@ls.st",
+        "url": f"http://localhost:{analysis_port}/analysis/demo_analysis",
+        "authentication_type": "none",
+        "analysis_type": "lightcurve_fitting",
+        "input_data_types": [],
+        "is_summary": True,
+        "timeout": 60,
+        "group_ids": [public_group.id],
+    }
+    status, data = api(
+        "POST", "analysis_service", data=post_data, token=analysis_service_token
+    )
+    assert status == 200, data
+    analysis_service_id = data["data"]["id"]
+
+    dateobs = public_gcnevent.dateobs.isoformat()
+    status, data = api(
+        "POST",
+        f"gcn_event/{dateobs}/analysis/{analysis_service_id}",
+        token=analysis_token,
+    )
+    assert status == 400, data
+    assert "cannot run on a GCN event" in data["message"]
+
+
+def test_run_gcnevent_analysis(
+    analysis_service_token, analysis_token, public_group, public_gcnevent
+):
+    name = str(uuid.uuid4())
+    post_data = {
+        "name": name,
+        "display_name": "test gcn-event analysis service",
+        "description": "A test GCN-event analysis service",
+        "version": "1.0",
+        "contact_name": "Vera Rubin",
+        "contact_email": "vr@ls.st",
+        "url": f"http://localhost:{analysis_port}/analysis/demo_analysis",
+        "authentication_type": "none",
+        "analysis_type": "lightcurve_fitting",
+        # GCN-event analyses receive the event dateobs/GPS, not exported datasets.
+        "input_data_types": [],
+        "timeout": 60,
+        "group_ids": [public_group.id],
+    }
+    status, data = api(
+        "POST", "analysis_service", data=post_data, token=analysis_service_token
+    )
+    assert status == 200, data
+    analysis_service_id = data["data"]["id"]
+
+    dateobs = public_gcnevent.dateobs.isoformat()
+    status, data = api(
+        "POST",
+        f"gcn_event/{dateobs}/analysis/{analysis_service_id}",
+        token=analysis_token,
+    )
+    assert status == 200, data
+    analysis_id = data["data"].get("id")
+    assert analysis_id is not None
+
+    params = {"includeAnalysisData": True}
+
+    def analysis_started():
+        status, data = api(
+            "GET",
+            f"gcn_event/analysis/{analysis_id}",
+            token=analysis_token,
+            params=params,
+        )
+        assert status == 200, data
+        assert data["data"]["analysis_service_id"] == analysis_service_id
+        # status != queued means the service was called and the webhook returned
+        assert data["data"]["status"] != "queued", data["data"]["status_message"]
+        return data
+
+    retry_until(analysis_started, timeout=100)
+
+    # list analyses for the event
+    status, data = api("GET", f"gcn_event/{dateobs}/analysis", token=analysis_token)
+    assert status == 200, data
+    assert any(a["id"] == analysis_id for a in data["data"])
+
+    # delete
+    status, data = api(
+        "DELETE", f"gcn_event/analysis/{analysis_id}", token=analysis_token
+    )
+    assert status == 200, data
+
+
+def test_default_gcnevent_analysis_on_grb_tag(
+    analysis_service_token,
+    analysis_token,
+    super_admin_token,
+    public_group,
+    public_gcnevent,
+):
+    # A gcn_event default analysis auto-runs when a matching tag lands on an event.
+    name = str(uuid.uuid4())
+    post_data = {
+        "name": name,
+        "display_name": "test gcn-event default analysis service",
+        "description": "A test GCN-event analysis service",
+        "version": "1.0",
+        "contact_name": "Vera Rubin",
+        "contact_email": "vr@ls.st",
+        "url": f"http://localhost:{analysis_port}/analysis/demo_analysis",
+        "authentication_type": "none",
+        "analysis_type": "lightcurve_fitting",
+        "input_data_types": [],
+        "timeout": 60,
+        "group_ids": [public_group.id],
+    }
+    status, data = api(
+        "POST", "analysis_service", data=post_data, token=analysis_service_token
+    )
+    assert status == 200, data
+    analysis_service_id = data["data"]["id"]
+
+    status, data = api(
+        "POST",
+        f"analysis_service/{analysis_service_id}/default_analysis",
+        data={
+            "analysis_resource_type": "gcn_event",
+            "source_filter": {"gcn_tags": ["GRB"]},
+            "group_ids": [public_group.id],
+            "daily_limit": 5,
+        },
+        token=analysis_token,
+    )
+    assert status == 200, data
+
+    dateobs = public_gcnevent.dateobs.isoformat()
+
+    # A non-matching tag must not trigger the default analysis.
+    status, data = api(
+        "POST",
+        "gcn_event/tags",
+        data={"dateobs": dateobs, "text": "GW"},
+        token=super_admin_token,
+    )
+    assert status == 200, data
+
+    # The GRB tag should trigger it.
+    status, data = api(
+        "POST",
+        "gcn_event/tags",
+        data={"dateobs": dateobs, "text": "GRB"},
+        token=super_admin_token,
+    )
+    assert status == 200, data
+
+    # Only the GRB tag matches, so exactly one analysis should be auto-created
+    # (like test_default_analysis, we pin creation, not webhook completion).
+    def analysis_created():
+        status, data = api(
+            "GET",
+            f"gcn_event/{dateobs}/analysis",
+            token=analysis_token,
+        )
+        assert status == 200, data
+        matches = [
+            a for a in data["data"] if a["analysis_service_id"] == analysis_service_id
+        ]
+        assert len(matches) == 1, f"expected one auto-run analysis, got {len(matches)}"
+        return matches[0]
+
+    analysis = retry_until(analysis_created, timeout=60)
+
+    status, data = api(
+        "DELETE", f"gcn_event/analysis/{analysis['id']}", token=analysis_token
+    )
+    assert status == 200, data
+
+    # Remove the tags we added so the public_gcnevent fixture can delete the
+    # event (gcntags.dateobs is NOT NULL, so a nullifying cascade would fail).
+    for tag_text in ("GW", "GRB"):
+        api(
+            "DELETE",
+            f"gcn_event/tags/{dateobs}",
+            data={"tag": tag_text},
+            token=super_admin_token,
+        )

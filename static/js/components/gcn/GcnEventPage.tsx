@@ -32,6 +32,8 @@ import Spinner from "../Spinner";
 
 import ObservationPlanRequestForm from "../observation_plan/ObservationPlanRequestForm";
 import ObservationPlanRequestLists from "../observation_plan/ObservationPlanRequestLists";
+import AnalysisList from "../analysis/AnalysisList";
+import AnalysisForm from "../analysis/AnalysisForm";
 
 import { useCommentTarget } from "../../contexts/CommentPanelContext";
 import DisplayGraceDB from "./DisplayGraceDB";
@@ -470,6 +472,19 @@ const GcnEventPage = ({ route }: GcnEventPageProps) => {
                 <Reminders
                   resourceId={gcnEvent.id.toString()}
                   resourceType="gcn_event"
+                />
+              </Grid>
+              <Grid size={12}>
+                <Typography className={styles.sectionHeading}>
+                  Analyses
+                </Typography>
+                <AnalysisForm
+                  obj_id={dateobs}
+                  analysisResourceType="gcn_event"
+                />
+                <AnalysisList
+                  obj_id={dateobs}
+                  analysisResourceType="gcn_event"
                 />
               </Grid>
               <PropertiesSection title="Light curve" size={{ sm: 12, lg: 6 }}>

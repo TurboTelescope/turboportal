@@ -1,9 +1,12 @@
+import { skipToken } from "@reduxjs/toolkit/query";
 import { useGetGroupsQuery } from "../../ducks/groups";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import SearchableSelect from "../SearchableSelect";
 import Select from "@mui/material/Select";
 import InputLabel from "@mui/material/InputLabel";
 import MenuItem from "@mui/material/MenuItem";
+import Switch from "@mui/material/Switch";
+import FormControlLabel from "@mui/material/FormControlLabel";
 
 import Form from "@rjsf/mui";
 import validator from "@rjsf/validator-ajv8";
@@ -65,20 +68,39 @@ const useStyles = makeStyles()(() => ({
   },
 }));
 
+// Section headers for the analysis dropdown, keyed by AnalysisService.analysis_type.
+// Unmapped types fall back to the raw value so a new type is still grouped.
+const ANALYSIS_TYPE_LABELS: Record<string, string> = {
+  lightcurve_fitting: "Light-Curve Fitting",
+  spectrum_fitting: "Spectral Classification",
+  period_finding: "Period Finding",
+  gw_search: "Gravitational-Wave Searches",
+  meta_analysis: "Meta / Summarization",
+};
+
 interface AnalysisFormProps {
   obj_id: string;
+  analysisResourceType?: string;
 }
 
-const AnalysisForm = ({ obj_id }: AnalysisFormProps) => {
+const AnalysisForm = ({
+  obj_id,
+  analysisResourceType = "obj",
+}: AnalysisFormProps) => {
   const { classes } = useStyles();
   const dispatch = useAppDispatch();
   const [startAnalysis] = useStartAnalysisMutation();
+  const isObj = analysisResourceType === "obj";
 
+  // Photometry and associated GCNs are source concepts; skip them for other
+  // resource types (e.g. gcn_event, where obj_id is a dateobs).
   const { data: photometry, isSuccess: photometryLoaded } =
-    useFetchSourcePhotometryQuery({ id: obj_id });
+    useFetchSourcePhotometryQuery(isObj ? { id: obj_id } : skipToken);
   // dateobs (== T0) of GW/GCN events associated with this source, used to
   // prefill the afterglow trigger time (see the trigger_time widget below).
-  const { data: associatedGcnsData } = useGetAssociatedGcnsQuery(obj_id);
+  const { data: associatedGcnsData } = useGetAssociatedGcnsQuery(
+    isObj ? obj_id : skipToken,
+  );
   const associatedGCNs: string[] = useMemo(
     () => (associatedGcnsData as any)?.gcns ?? [],
     [associatedGcnsData],
@@ -109,9 +131,15 @@ const AnalysisForm = ({ obj_id }: AnalysisFormProps) => {
   // selected service's groups, so users can't share with a group they're not in.
   const { data: groupsData, isLoading: groupsLoading } = useGetGroupsQuery();
   const userAccessibleGroups = groupsData?.userAccessible ?? null;
+  // Each user has one single-user group; scoping a run to it keeps the result
+  // (and its annotation) private to that user, no shared annotation written.
+  const singleUserGroup = (groupsData?.user ?? []).find(
+    (g: any) => g.single_user_group,
+  );
   const [selectedAnalysisServiceId, setSelectedAnalysisServiceId] =
     useState<any>(null);
   const [selectedGroupIds, setSelectedGroupIds] = useState<any[]>([]);
+  const [runPrivately, setRunPrivately] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   // Selected files for `file`-type analysis parameters, handled outside rjsf.
   const fileValues = useRef<Record<string, File | null>>({});
@@ -218,6 +246,10 @@ const AnalysisForm = ({ obj_id }: AnalysisFormProps) => {
             return;
           } else if (params?.type === "string") {
             OptionalParameters[key] = { type: "string", title: key };
+          } else if (params?.type === "boolean") {
+            // Object-form boolean: a labeled checkbox (the bare ["True","False"]
+            // array renders a checkbox too, but can't carry a title/description).
+            OptionalParameters[key] = { type: "boolean", title: key };
           }
           if (OptionalParameters[key]) {
             if (params?.default !== undefined)
@@ -443,13 +475,17 @@ const AnalysisForm = ({ obj_id }: AnalysisFormProps) => {
       input_filters,
     };
 
-    if (selectedGroupIds.length >= 0) {
+    if (runPrivately && singleUserGroup) {
+      // Private run: scope to the user's own single-user group only.
+      params["group_ids"] = [singleUserGroup.id];
+    } else {
       params["group_ids"] = selectedGroupIds;
     }
     try {
       await startAnalysis({
         id: obj_id,
         analysis_service_id: selectedAnalysisServiceId,
+        analysis_resource_type: analysisResourceType,
         formData: params,
       }).unwrap();
       const service = analysisServiceLookUp[selectedAnalysisServiceId];
@@ -483,7 +519,11 @@ const AnalysisForm = ({ obj_id }: AnalysisFormProps) => {
           getOptionLabel={(option: any) =>
             option?.display_name || option?.name || ""
           }
-          groupBy={(option: any) => option?.analysis_type || "other"}
+          groupBy={(option: any) =>
+            ANALYSIS_TYPE_LABELS[option?.analysis_type] ||
+            option?.analysis_type ||
+            "Other"
+          }
           getOptionDisabled={(option: any) => !serviceHasRequiredInputs(option)}
           isOptionEqualToValue={(option: any, value: any) =>
             option?.id === value?.id
@@ -501,11 +541,24 @@ const AnalysisForm = ({ obj_id }: AnalysisFormProps) => {
           </p>
         )}
       </div>
-      <GroupShareSelect
-        groupList={shareableGroups}
-        setGroupIDs={setSelectedGroupIds}
-        groupIDs={selectedGroupIds}
+      <FormControlLabel
+        control={
+          <Switch
+            checked={runPrivately}
+            onChange={(e) => setRunPrivately(e.target.checked)}
+            disabled={!singleUserGroup}
+            data-testid="analysis-run-privately"
+          />
+        }
+        label="Run privately (results and annotation visible only to me)"
       />
+      {!runPrivately && (
+        <GroupShareSelect
+          groupList={shareableGroups}
+          setGroupIDs={setSelectedGroupIds}
+          groupIDs={selectedGroupIds}
+        />
+      )}
       <div data-testid="analysis-service-request-form">
         {fileKeys.map((key: string) => (
           <div key={key} className={classes.marginTop}>

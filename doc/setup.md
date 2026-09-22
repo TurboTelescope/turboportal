@@ -11,6 +11,7 @@ how to install them on MacOS and Debian-based systems below.
 - PostgreSQL (v>=14.0)
 - Node.JS/npm (v>=16.14.0/8.3.2)
 - Bun
+- pgvector, the PostgreSQL extension supplying the `vector` type
 
 When installing SkyPortal on Debian-based systems, 2 additional packages are required to be able to install `pycurl` later on:
 
@@ -85,8 +86,10 @@ These instructions assume that you have [Homebrew](http://brew.sh/) installed.
 Using Homebrew, install core dependencies:
 
 ```
-brew install supervisor nginx postgresql node llvm libomp gsl rust bun
+brew install supervisor nginx postgresql node llvm libomp gsl rust bun pgvector
 ```
+
+`pgvector` supplies the `vector` type the source-summary embeddings table uses. The table is created when the database is initialised, so pgvector has to be present even if you never turn the summary search on. `make db_init` enables it in each database.
 
 If you want to use [brotli compression](https://en.wikipedia.org/wiki/Brotli) with NGINX (better compression rates for the frontend), you can install NGINX with the `ngx_brotli` module with this command:
 
@@ -221,10 +224,22 @@ If you plan to run `make load_demo_data` or the unit tests, also update the port
 1. Install dependencies
 
    ```
-   sudo apt install supervisor postgresql \
-         libpq-dev npm python3-pip \
+   sudo apt install supervisor postgresql libpq-dev npm python3-pip \
          libcurl4-gnutls-dev libgnutls28-dev
    ```
+
+   `pgvector` supplies the `vector` type the source-summary embeddings table
+   uses. The table is created when the database is initialised, so pgvector has
+   to be present even if you never turn the summary search on. Its package is
+   named for the PostgreSQL version, which `pg_config` reports once the command
+   above has run:
+
+   ```
+   sudo apt install postgresql-$(pg_config --version | \
+         grep -oE '[0-9]+' | head -1)-pgvector
+   ```
+
+   `make db_init` enables it in each database.
 
    If you want to use [brotli compression](https://en.wikipedia.org/wiki/Brotli) with NGINX (better compression rates for the frontend), you have to install NGINX and the brotli module from another source with:
 
@@ -310,9 +325,16 @@ environment, the Javascript bundle and the database schema all change with it.
 1. Get the new code with `git pull` (or `git checkout v1.2.3` for a release).
 2. Update the submodules with `git submodule update --init --recursive`.
 3. Update the Python environment with `uv sync`.
-4. Apply any pending database migrations with `make db_migrate`.
-5. Start the app again with `make run`, which reinstalls the Javascript
+4. Install pgvector, which every database now needs whether or not the summary
+   search is on. The installation section for your platform gives the command.
+5. Apply any pending database migrations with `make db_migrate`.
+6. Start the app again with `make run`, which reinstalls the Javascript
    dependencies and rebuilds the bundle.
+
+The source-summary search used to keep its vectors in Pinecone, and now keeps
+them in SkyPortal's own database. An installation whose config still says
+`location: pinecone` loses the search until that is changed to `pgvector`, and
+each summary is written again so its vector is stored.
 
 `make db_migrate` runs `alembic upgrade head`, with `PYTHONPATH` and the config
 flag already set. To run alembic directly, activate the environment and supply
@@ -340,6 +362,11 @@ The resulting errors do not usually name the step that was skipped:
   was run without `PYTHONPATH=.`, or outside the environment, rather than the
   submodules being missing. The `make` targets set both.
 - If alembic reports more than one head, see [Database migrations](migrations).
+- A migration that stops on the `vector` type means that database has no
+  pgvector. Installing an extension takes a superuser, so `make db_init` does
+  it; where the application role may not, an administrator runs
+  `CREATE EXTENSION vector;` once per database. If that fails in turn, pgvector
+  is missing from the machine.
 
 ## Troubleshooting
 
@@ -404,6 +431,30 @@ login screen). If you are running a public-facing instance of
 SkyPortal, you should enable multi-user login by adding Google
 credentials to the `server:auth` section of the configuration file and
 setting `debug_login` to `False`.
+
+### Account applications
+
+Where `invitations.enabled` is set, only an administrator holding the
+`Manage users` ACL can bring someone onto the instance. Setting
+`user_applications.enabled` opens a second route: people without an account
+apply from a form on the login page, or at `/apply`, naming an existing user who
+can vouch for them. Approving an application issues the invitation and emails it
+to the applicant, who then signs in through the usual OAuth flow.
+
+Applications are off by default, and that one flag covers everything the feature
+adds: the form on the login page, the `/apply` page, the API endpoints and the
+sidebar entry.
+
+`user_applications.peer_endorsement` decides who acts on an application. Left
+`False`, only `Manage users` administrators approve. Set `True`, any user
+holding the `Endorse users` ACL can vouch for one, as arXiv and GCN do;
+administrators still can either way. `Endorse users` is granted to the
+`Full user` and `Group admin` roles by default, and does nothing until peer
+endorsement is on.
+
+Whoever decides chooses the new user's role, and may add them only to groups
+they themselves belong to, so an endorsement cannot hand out access the endorser
+does not have.
 
 ### Username generation
 

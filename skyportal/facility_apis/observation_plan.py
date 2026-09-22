@@ -473,8 +473,11 @@ class MMAAPI(FollowUpAPI):
     def custom_json_schema(instrument, user, **kwargs):
         from ..models import DBSession, GalaxyCatalog, InstrumentField
 
-        galaxy_catalogs = kwargs.get("galaxy_catalog_names", [])
-        if not isinstance(galaxy_catalogs, list) or len(galaxy_catalogs) == 0:
+        # An empty list is a valid answer (no catalogs); only a missing kwarg
+        # falls back to a per-instrument query, else rendering many instruments
+        # re-runs this DISTINCT once each.
+        galaxy_catalogs = kwargs.get("galaxy_catalog_names")
+        if galaxy_catalogs is None:
             galaxy_catalogs = [
                 g for (g,) in DBSession().query(GalaxyCatalog.name).distinct().all()
             ]
@@ -485,17 +488,23 @@ class MMAAPI(FollowUpAPI):
             end_date = Time(end_date, format="jd").iso
 
         # we add a use_references boolean to the schema if any of the instrument's fields has reference filters
-        has_references = (
-            DBSession()
-            .query(InstrumentField)
-            .filter(
-                InstrumentField.instrument_id == instrument.id,
-                InstrumentField.reference_filters.isnot(None),
-                sa.func.cardinality(InstrumentField.reference_filters) > 0,
+        instrument_ids_with_references = kwargs.get("instrument_ids_with_references")
+        if instrument_ids_with_references is None:
+            # Counting per instrument costs a query each; a caller rendering many
+            # of them passes the whole set in instead.
+            has_references = (
+                DBSession()
+                .query(InstrumentField)
+                .filter(
+                    InstrumentField.instrument_id == instrument.id,
+                    InstrumentField.reference_filters.isnot(None),
+                    sa.func.cardinality(InstrumentField.reference_filters) > 0,
+                )
+                .count()
+                > 0
             )
-            .count()
-            > 0
-        )
+        else:
+            has_references = instrument.id in instrument_ids_with_references
 
         form_json_schema = {
             "type": "object",

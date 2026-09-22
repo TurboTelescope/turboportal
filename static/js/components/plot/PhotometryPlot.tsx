@@ -135,6 +135,10 @@ const getPhotometryInstrumentLabel = (point: any) =>
 
 // Internal flux is in µJy (PHOT_ZP = 23.9 is the AB zeropoint for µJy); these
 // factors rescale the flux axis to the selected display unit.
+// Below this signal-to-noise a measurement is drawn as an upper limit by
+// default; it is still real data, so a toggle reveals the raw point.
+const LOW_SIGNIFICANCE_SNR = 3;
+
 const FLUX_UNIT_FACTORS: Record<string, number> = {
   µJy: 1,
   mJy: 1e-3,
@@ -588,9 +592,11 @@ const PhotometryPlot = ({
   };
 
   // Params for the main object's photometry query. Duplicate sources are fetched
-  // lazily with just `{ magsys }` (mirroring the old duplicate fetch).
+  // lazily with the same magsys and format.
   const mainPhotParams = useMemo<any>(() => {
-    const params: any = { magsys };
+    // "both" so the flux view can plot the measured flux. A magnitude cannot
+    // express a non-detection, whose flux is at or below zero.
+    const params: any = { magsys, format: "both" };
     // Fetch per-point extinction when the toggle is on, or when a dereddened
     // model fit exists (so its overlay can be re-reddened to the observed data).
     if (
@@ -814,7 +820,31 @@ const PhotometryPlot = ({
         })),
     [mainPhotometry],
   );
-  const solarSystemCtrl = useSolarSystemPlot(solarSystemPoints);
+  // The outburst statistic is the broker's, not ours: it is computed against the
+  // object's fitted phase curve over the whole archive and stored on the
+  // annotation, so the plot shows that number rather than deriving its own.
+  const outburstAnnotation = (annotations || []).find(
+    (a: any) => Array.isArray(a?.data?.points) && a.data.points.length > 0,
+  );
+  const brokerOutburst = useMemo(
+    () =>
+      outburstAnnotation
+        ? {
+            origin: outburstAnnotation.origin as string,
+            sigma:
+              typeof outburstAnnotation.data.outburst_sigma === "number"
+                ? outburstAnnotation.data.outburst_sigma
+                : null,
+            points: outburstAnnotation.data.points as {
+              jd: number;
+              sigma: number;
+            }[],
+          }
+        : null,
+    [outburstAnnotation],
+  );
+
+  const solarSystemCtrl = useSolarSystemPlot(solarSystemPoints, brokerOutburst);
 
   const [period, setPeriod] = useState<any>(1);
   const [periodUnit, setPeriodUnit] = useState("days");
@@ -844,6 +874,11 @@ const PhotometryPlot = ({
   const [fluxUnit, setFluxUnit] = useState<string>("µJy");
   const [showNonDetections, setShowNonDetections] = useState(true);
   const [showForcedPhotometry, setshowForcedPhotometry] = useState(true);
+  // A measurement below this is shown as an upper limit unless asked for.
+  const [showLowSignificance, setShowLowSignificance] = useState(false);
+  // Plot the measured flux in the flux view, including the zero and negative
+  // values a magnitude cannot represent.
+  const [showNegativeFlux, setShowNegativeFlux] = useState(false);
   const [showOnlyValidated, setShowOnlyValidated] = useState(false);
 
   const [initialized, setInitialized] = useState(false);
@@ -858,6 +893,8 @@ const PhotometryPlot = ({
     photometryData: any[],
     distance_modulus: any,
     showExtinctionCorrectionValue: any,
+    showLowSignificanceValue: boolean,
+    showNegativeFluxValue: boolean,
   ): [any[], any] => {
     const stats: any = {
       mag: {
@@ -902,10 +939,36 @@ const PhotometryPlot = ({
         if (newPoint.snr < 0) {
           newPoint.snr = null;
         }
+        // A faint measurement is real data but not a detection, so by default it
+        // is drawn at its limiting magnitude; the toggle re-runs this with the
+        // measured value instead.
+        if (
+          !showLowSignificanceValue &&
+          newPoint.snr !== null &&
+          newPoint.snr < LOW_SIGNIFICANCE_SNR
+        ) {
+          newPoint.mag = null;
+          newPoint.flux = 10 ** (-0.4 * (newPoint.limiting_mag - PHOT_ZP));
+          newPoint.fluxerr = 0;
+          newPoint.snr = null;
+        }
       } else {
         newPoint.flux = 10 ** (-0.4 * (newPoint.limiting_mag - PHOT_ZP));
         newPoint.fluxerr = 0;
         newPoint.snr = null;
+      }
+      // The measured flux keeps the sign a magnitude cannot carry, so a
+      // non-detection sits at or below zero rather than at its limit. Rescaled
+      // from the response zeropoint onto PHOT_ZP, the scale the values derived
+      // from the magnitude above are on.
+      if (point.flux !== null && point.flux !== undefined) {
+        const zpScale = 10 ** (-0.4 * ((point.zp ?? PHOT_ZP) - PHOT_ZP));
+        newPoint.measuredFlux = point.flux * zpScale;
+        newPoint.measuredFluxerr = (point.fluxerr ?? 0) * zpScale;
+        if (showNegativeFluxValue) {
+          newPoint.flux = newPoint.measuredFlux;
+          newPoint.fluxerr = newPoint.measuredFluxerr;
+        }
       }
       // Rescale to the selected flux unit (snr is a ratio, so it is unaffected).
       if (fluxUnitFactor !== 1) {
@@ -986,7 +1049,10 @@ const PhotometryPlot = ({
         }
         <br>${fluxLabel}: ${fluxToShow ? fluxToShow.toFixed(3) : "NaN"}
       `;
-      if (newPoint.mag) {
+      if (
+        newPoint.mag ||
+        (showNegativeFluxValue && newPoint.measuredFlux != null)
+      ) {
         newPoint.text += `<br>Fluxerr: ${newPoint.fluxerr.toFixed(3) || "NaN"}`;
       }
       newPoint.text += `
@@ -1141,6 +1207,7 @@ const PhotometryPlot = ({
     showNonDetectionsValue: any,
     showForcedPhotometryValue: any,
     showExtinctionCorrectionValue: any,
+    showNegativeFluxValue: any,
     existingPlotData: any,
     filter2colorMapper: any,
   ): any => {
@@ -1154,11 +1221,17 @@ const PhotometryPlot = ({
       const newPlotData = Object.keys(groupedPhotometry)
         .sort()
         .map((key) => {
-          const detections = groupedPhotometry[key].filter(
-            (point: any) => point.mag !== null,
-          );
+          // Showing negative flux, anything with a measured flux is a
+          // measurement with an uncertainty; only a point with no flux at all is
+          // still an upper limit. Elsewhere a point is a detection if it has a
+          // magnitude.
+          const isMeasurement = (point: any) =>
+            plotType === "flux" && showNegativeFluxValue
+              ? point.measuredFlux !== null && point.measuredFlux !== undefined
+              : point.mag !== null;
+          const detections = groupedPhotometry[key].filter(isMeasurement);
           const upperLimits = groupedPhotometry[key].filter(
-            (point: any) => point.mag === null,
+            (point: any) => !isMeasurement(point),
           );
 
           // TEMPORARY: until we have a mapper for each sncosmo filter, we force the color to be black
@@ -1705,7 +1778,10 @@ const PhotometryPlot = ({
     if (selectedDuplicates.length > 0) {
       selectedDuplicates.forEach((dup) => {
         if (!photometry[dup]) {
-          fetchPhotometryTrigger({ id: dup, params: { magsys } });
+          fetchPhotometryTrigger({
+            id: dup,
+            params: { magsys, format: "both" },
+          });
         }
       });
     }
@@ -1753,6 +1829,8 @@ const PhotometryPlot = ({
         photometryFiltered,
         dm,
         showExtinctionCorrection,
+        showLowSignificance,
+        showNegativeFlux,
       );
       const groupedPhotometry = groupPhotometry(
         newPhotometry,
@@ -1772,6 +1850,7 @@ const PhotometryPlot = ({
         showNonDetections,
         showForcedPhotometry,
         showExtinctionCorrection,
+        showNegativeFlux,
         plotData || [],
         filter2color,
       );
@@ -1842,6 +1921,8 @@ const PhotometryPlot = ({
     fluxUnit,
     showOnlyValidated,
     shownModelFits,
+    showLowSignificance,
+    showNegativeFlux,
   ]);
 
   // Only an axis whose meaning changed invalidates the user's zoom. New or
@@ -1880,6 +1961,7 @@ const PhotometryPlot = ({
         showNonDetections,
         showForcedPhotometry,
         showExtinctionCorrection,
+        showNegativeFlux,
         plotData,
         filter2color,
       );
@@ -1932,6 +2014,7 @@ const PhotometryPlot = ({
         showNonDetections,
         showForcedPhotometry,
         showExtinctionCorrection,
+        showNegativeFlux,
         plotData,
         filter2color,
       );
@@ -2523,6 +2606,44 @@ const PhotometryPlot = ({
                   size="small"
                 />
               </div>
+            </div>
+            <div
+              style={{ display: "flex", gap: "0.25rem", alignItems: "center" }}
+            >
+              <Typography id="photometry-show-hide" noWrap>
+                {`Show <${LOW_SIGNIFICANCE_SNR}\u03c3 points`}
+              </Typography>
+              <Tooltip
+                title={`Measurements below ${LOW_SIGNIFICANCE_SNR}\u03c3 are drawn at their limiting magnitude. Turn this on to plot the measured value instead.`}
+              >
+                <div className={classes.switchContainer}>
+                  <Switch
+                    checked={showLowSignificance}
+                    onChange={() =>
+                      setShowLowSignificance(!showLowSignificance)
+                    }
+                    slotProps={{ input: { "aria-label": "controlled" } }}
+                    size="small"
+                  />
+                </div>
+              </Tooltip>
+            </div>
+            <div
+              style={{ display: "flex", gap: "0.25rem", alignItems: "center" }}
+            >
+              <Typography id="photometry-negative-flux" noWrap>
+                Show negative flux
+              </Typography>
+              <Tooltip title="Flux view only. Plots the measured flux with its uncertainty, so a source fainter than the reference keeps its negative value instead of becoming an upper limit. A log flux axis cannot show it.">
+                <div className={classes.switchContainer}>
+                  <Switch
+                    checked={showNegativeFlux}
+                    onChange={() => setShowNegativeFlux(!showNegativeFlux)}
+                    slotProps={{ input: { "aria-label": "controlled" } }}
+                    size="small"
+                  />
+                </div>
+              </Tooltip>
             </div>
             {hasCutoutPoints && (
               <div className={classes.switchContainer}>

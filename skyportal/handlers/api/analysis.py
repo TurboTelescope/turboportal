@@ -4,7 +4,7 @@ import functools
 import io
 import json
 import os
-from typing import Annotated, Any, ClassVar
+from typing import Annotated
 from urllib.parse import urljoin, urlparse
 
 import numpy as np
@@ -13,9 +13,20 @@ import requests
 import sqlalchemy as sa
 import yaml
 from marshmallow.exceptions import ValidationError
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
 from requests.auth import HTTPBasicAuth, HTTPDigestAuth
 from requests_oauthlib import OAuth1
+from skyportal_py_models.analysis import (
+    AnalysisGetQuery,
+    AnalysisPatchBody,
+    AnalysisPostBody,
+    AnalysisProductsGetQuery,
+    AnalysisServicePatchBody,
+    AnalysisServicePostBody,
+    AnalysisUploadBody,
+    DefaultAnalysisPatchBody,
+    DefaultAnalysisPostBody,
+)
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import contains_eager, joinedload, selectinload
@@ -32,6 +43,7 @@ from ...enum_types import (
     ANALYSIS_TYPES,
     AUTHENTICATION_TYPES,
     DEFAULT_ANALYSIS_FILTER_TYPES,
+    DEFAULT_ANALYSIS_LIST_FILTERS,
     DEFAULT_ANALYSIS_SCALAR_FILTERS,
 )
 from ...models import (
@@ -319,6 +331,122 @@ def get_associated_obj_resource(associated_resource_type):
     return associated_resource_types[associated_resource_type]
 
 
+def analysis_model_for(analysis_resource_type):
+    """Map an analysis_resource_type to its Analysis model class, or None."""
+    t = analysis_resource_type.lower()
+    if t == "obj":
+        return ObjAnalysis
+    if t == "gcn_event":
+        from ...models import GcnEventAnalysis
+
+        return GcnEventAnalysis
+    return None
+
+
+def _localization_payload(localization):
+    """Sky position (max-probability point) and a skymap reference for a GCN
+    localization, best-effort. Targeted searches (e.g. PyGRB) point at ra/dec; the
+    skymap reference is passed through for later use."""
+    if localization is None:
+        return {}
+    out = {
+        "localization_name": localization.localization_name,
+        "skymap_url": (
+            f"/api/localization/{localization.dateobs.isoformat()}"
+            f"/name/{localization.localization_name}/download"
+        ),
+    }
+    try:
+        center = localization.center
+        out["ra"] = float(center["ra"])
+        out["dec"] = float(center["dec"])
+    except Exception:
+        pass
+    return out
+
+
+def _build_gcnevent_analysis(
+    resource_id,
+    current_user,
+    author,
+    groups,
+    analysis_service,
+    session,
+    inputs,
+    analysis_parameters,
+    show_parameters,
+    show_plots,
+    show_corner,
+    input_filters,
+):
+    """Build a queued GcnEventAnalysis, plus its frontend path.
+
+    Unlike obj analyses (which export photometry/spectra), a GCN-event analysis
+    receives the event's dateobs and GPS time — what time-domain services (e.g.
+    aframe) work from.
+    """
+    if analysis_service.is_summary:
+        raise ValueError(
+            "A summary is written to a source's summary history, so a summary "
+            "analysis service cannot run on a GCN event."
+        )
+
+    import arrow
+    from astropy.time import Time
+
+    from ...models import GcnEvent, GcnEventAnalysis, Localization
+
+    dateobs = arrow.get(resource_id).naive
+    event = session.scalars(
+        GcnEvent.select(current_user).where(GcnEvent.dateobs == dateobs)
+    ).first()
+    if event is None:
+        raise ValueError(f"GcnEvent {resource_id} not found")
+
+    localization = session.scalars(
+        Localization.select(current_user)
+        .where(Localization.dateobs == event.dateobs)
+        .order_by(Localization.created_at.desc())
+    ).first()
+    inputs["gcn_event"] = {
+        "dateobs": event.dateobs.isoformat(),
+        "gps": float(Time(event.dateobs).gps),
+        **_localization_payload(localization),
+    }
+
+    stmt = (
+        GcnEventAnalysis.select(current_user)
+        .where(GcnEventAnalysis.dateobs == event.dateobs)
+        .where(GcnEventAnalysis.author == author)
+        .where(GcnEventAnalysis.status == "completed")
+    )
+    total_matches = session.execute(select(func.count()).select_from(stmt)).scalar()
+    if total_matches >= cfg["analysis_services.max_analysis_per_obj_per_user"]:
+        raise Exception(
+            "You have reached the maximum number of analyses for this event. "
+            "Please delete some before starting more."
+        )
+
+    invalid_after = utcnow_naive() + datetime.timedelta(
+        seconds=analysis_service.timeout
+    )
+    analysis = GcnEventAnalysis(
+        dateobs=event.dateobs,
+        author=author,
+        groups=groups,
+        analysis_service=analysis_service,
+        show_parameters=show_parameters,
+        show_plots=show_plots,
+        show_corner=show_corner,
+        analysis_parameters=analysis_parameters,
+        status="queued",
+        handled_by_url="api/webhook/gcn_event_analysis",
+        invalid_after=invalid_after,
+        input_filters=input_filters,
+    )
+    return analysis, f"/gcn_events/{event.dateobs.isoformat()}"
+
+
 def post_analysis(
     analysis_resource_type,
     resource_id,
@@ -399,6 +527,11 @@ def post_analysis(
         obj = session.scalars(stmt).first()
         if obj is None:
             raise ValueError(f"Obj {obj_id} not found")
+
+        # The object's own identity and position, so a service that works from a
+        # sky position (an archive crossmatch, say) does not need the caller to
+        # pass coordinates it already knows.
+        inputs["obj"] = {"id": obj.id, "ra": obj.ra, "dec": obj.dec}
 
         # make sure the user has not exceeded the maximum number of analyses
         # for this object. This will help save space on the disk
@@ -511,9 +644,26 @@ def post_analysis(
             invalid_after=invalid_after,
             input_filters=input_filters,
         )
-    # Add more analysis_resource_types here one day (eg. GCN)
+        resource_path = f"/source/{obj_id}"
+    elif analysis_resource_type.lower() == "gcn_event":
+        analysis, resource_path = _build_gcnevent_analysis(
+            resource_id,
+            current_user,
+            author,
+            groups,
+            analysis_service,
+            session,
+            inputs,
+            analysis_parameters,
+            show_parameters,
+            show_plots,
+            show_corner,
+            input_filters,
+        )
     else:
-        raise ValueError(f"analysis_resource_type must be one of {', '.join(['obj'])}")
+        raise ValueError(
+            f"analysis_resource_type must be one of {', '.join(['obj', 'gcn_event'])}"
+        )
 
     session.add(analysis)
     try:
@@ -559,7 +709,7 @@ def post_analysis(
                 user=current_user,
                 text=notification,
                 notification_type="default_analysis",
-                url=f"/source/{obj_id}/analysis/{analysis.id}",
+                url=f"{resource_path}/analysis/{analysis.id}",
             )
             session.add(user_notification)
             session.commit()
@@ -577,18 +727,17 @@ def post_analysis(
         Callback function for when the analysis service is done.
         Updates the Analysis object with the results/errors.
         """
-        # grab the analysis (only Obj for now)
-        if analysis_resource_type.lower() == "obj":
-            try:
-                analysis = session.get(ObjAnalysis, analysis_id)
-                if analysis is None:
-                    logger.error(f"Analysis {analysis_id} not found")
-                    return
-            except Exception as e:
-                log(f"Could not access Analysis {analysis_id} {e}.")
-                return
-        else:
+        analysis_cls = analysis_model_for(analysis_resource_type)
+        if analysis_cls is None:
             log(f"Invalid analysis_resource_type: {analysis_resource_type}")
+            return
+        try:
+            analysis = session.get(analysis_cls, analysis_id)
+            if analysis is None:
+                logger.error(f"Analysis {analysis_id} not found")
+                return
+        except Exception as e:
+            log(f"Could not access Analysis {analysis_id} {e}.")
             return
 
         analysis.last_activity = utcnow_naive()
@@ -605,16 +754,22 @@ def post_analysis(
                 f"[id={analysis_id} service={analysis_service_id}] status='{analysis.status}' message='{analysis.status_message}'"
             )
             session.commit()
-            if analysis_resource_type.lower() == "obj":
-                try:
-                    flow = Flow()
+            try:
+                flow = Flow()
+                if analysis_resource_type.lower() == "obj":
                     flow.push(
                         "*",
                         "skyportal/REFRESH_OBJ_ANALYSES",
                         payload={"obj_key": analysis.obj.internal_key},
                     )
-                except Exception as e:
-                    logger(f"Could not refresh analyses: {e}")
+                elif analysis_resource_type.lower() == "gcn_event":
+                    flow.push(
+                        "*",
+                        "skyportal/REFRESH_GCNEVENT",
+                        payload={"gcnEvent_dateobs": analysis.dateobs.isoformat()},
+                    )
+            except Exception as e:
+                logger(f"Could not refresh analyses: {e}")
 
     # Start the analysis service in a separate thread and log any exceptions
     x = IOLoop.current().run_in_executor(None, external_analysis_service)
@@ -683,6 +838,11 @@ async def post_analysis_async(
         obj = await session.scalar(stmt)
         if obj is None:
             raise ValueError(f"Obj {obj_id} not found")
+
+        # The object's own identity and position, so a service that works from a
+        # sky position (an archive crossmatch, say) does not need the caller to
+        # pass coordinates it already knows.
+        inputs["obj"] = {"id": obj.id, "ra": obj.ra, "dec": obj.dec}
 
         # make sure the user has not exceeded the maximum number of analyses
         # for this object. This will help save space on the disk
@@ -807,9 +967,77 @@ async def post_analysis_async(
             invalid_after=invalid_after,
             input_filters=input_filters,
         )
-    # Add more analysis_resource_types here one day (eg. GCN)
+        resource_path = f"/source/{obj_id}"
+    elif analysis_resource_type.lower() == "gcn_event":
+        if analysis_service.is_summary:
+            raise ValueError(
+                "A summary is written to a source's summary history, so a "
+                "summary analysis service cannot run on a GCN event."
+            )
+
+        import arrow
+        from astropy.time import Time
+
+        from ...models import GcnEvent, GcnEventAnalysis, Localization
+
+        dateobs = arrow.get(resource_id).naive
+        event = (
+            await session.scalars(
+                GcnEvent.select(current_user).where(GcnEvent.dateobs == dateobs)
+            )
+        ).first()
+        if event is None:
+            raise ValueError(f"GcnEvent {resource_id} not found")
+        localization = (
+            await session.scalars(
+                Localization.select(current_user)
+                .where(Localization.dateobs == event.dateobs)
+                .order_by(Localization.created_at.desc())
+            )
+        ).first()
+        # GPS time so time-domain services (e.g. aframe) needn't convert dateobs;
+        # ra/dec + skymap reference for targeted searches (e.g. PyGRB).
+        inputs["gcn_event"] = {
+            "dateobs": event.dateobs.isoformat(),
+            "gps": float(Time(event.dateobs).gps),
+            **_localization_payload(localization),
+        }
+        stmt = (
+            GcnEventAnalysis.select(current_user)
+            .where(GcnEventAnalysis.dateobs == event.dateobs)
+            .where(GcnEventAnalysis.author == author)
+            .where(GcnEventAnalysis.status == "completed")
+        )
+        total_matches = (
+            await session.execute(select(func.count()).select_from(stmt))
+        ).scalar()
+        if total_matches >= cfg["analysis_services.max_analysis_per_obj_per_user"]:
+            raise Exception(
+                "You have reached the maximum number of analyses for this event. "
+                "Please delete some before starting more."
+            )
+        invalid_after = utcnow_naive() + datetime.timedelta(
+            seconds=analysis_service.timeout
+        )
+        analysis = GcnEventAnalysis(
+            dateobs=event.dateobs,
+            author=author,
+            groups=groups,
+            analysis_service=analysis_service,
+            show_parameters=show_parameters,
+            show_plots=show_plots,
+            show_corner=show_corner,
+            analysis_parameters=analysis_parameters,
+            status="queued",
+            handled_by_url="api/webhook/gcn_event_analysis",
+            invalid_after=invalid_after,
+            input_filters=input_filters,
+        )
+        resource_path = f"/gcn_events/{event.dateobs.isoformat()}"
     else:
-        raise ValueError(f"analysis_resource_type must be one of {', '.join(['obj'])}")
+        raise ValueError(
+            f"analysis_resource_type must be one of {', '.join(['obj', 'gcn_event'])}"
+        )
 
     session.add(analysis)
     try:
@@ -865,7 +1093,7 @@ async def post_analysis_async(
                 user_id=current_user_id_val,
                 text=notification,
                 notification_type="default_analysis",
-                url=f"/source/{obj_id}/analysis/{analysis_id}",
+                url=f"{resource_path}/analysis/{analysis_id}",
             )
             session.add(user_notification)
             await session.commit()
@@ -887,18 +1115,17 @@ async def post_analysis_async(
         from ...models import DBSession
 
         with DBSession() as db_session:
-            # grab the analysis (only Obj for now)
-            if analysis_resource_type.lower() == "obj":
-                try:
-                    analysis = db_session.get(ObjAnalysis, analysis_id)
-                    if analysis is None:
-                        logger.error(f"Analysis {analysis_id} not found")
-                        return
-                except Exception as e:
-                    log(f"Could not access Analysis {analysis_id} {e}.")
-                    return
-            else:
+            analysis_cls = analysis_model_for(analysis_resource_type)
+            if analysis_cls is None:
                 log(f"Invalid analysis_resource_type: {analysis_resource_type}")
+                return
+            try:
+                analysis = db_session.get(analysis_cls, analysis_id)
+                if analysis is None:
+                    logger.error(f"Analysis {analysis_id} not found")
+                    return
+            except Exception as e:
+                log(f"Could not access Analysis {analysis_id} {e}.")
                 return
 
             analysis.last_activity = utcnow_naive()
@@ -915,237 +1142,28 @@ async def post_analysis_async(
                     f"[id={analysis_id} service={analysis_service_id}] status='{analysis.status}' message='{analysis.status_message}'"
                 )
                 db_session.commit()
-                if analysis_resource_type.lower() == "obj":
-                    try:
-                        flow = Flow()
+                try:
+                    flow = Flow()
+                    if analysis_resource_type.lower() == "obj":
                         flow.push(
                             "*",
                             "skyportal/REFRESH_OBJ_ANALYSES",
                             payload={"obj_key": analysis.obj.internal_key},
                         )
-                    except Exception as e:
-                        logger(f"Could not refresh analyses: {e}")
+                    elif analysis_resource_type.lower() == "gcn_event":
+                        flow.push(
+                            "*",
+                            "skyportal/REFRESH_GCNEVENT",
+                            payload={"gcnEvent_dateobs": analysis.dateobs.isoformat()},
+                        )
+                except Exception as e:
+                    logger(f"Could not refresh analyses: {e}")
 
     # Start the analysis service in a separate thread and log any exceptions
     x = IOLoop.current().run_in_executor(None, external_analysis_service)
     x.add_done_callback(analysis_done_callback)
 
     return analysis_id
-
-
-class AnalysisServicePostBody(BaseModel):
-    """Request body for creating an Analysis Service."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    name: str | None = Field(
-        default=None, description="Unique name/identifier of the analysis service."
-    )
-    display_name: str | None = Field(
-        default=None, description="Display name of the analysis service."
-    )
-    description: str | None = Field(
-        default=None, description="Description of the analysis service."
-    )
-    version: str | None = Field(
-        default=None,
-        description="Semantic version (or githash) of the analysis service.",
-    )
-    contact_name: str | None = Field(
-        default=None,
-        description="Name of person responsible for the service (ie. the "
-        "maintainer). This person does not need to be part of this SkyPortal "
-        "instance.",
-    )
-    contact_email: str | None = Field(
-        default=None,
-        description="Email address of the person responsible for the service.",
-    )
-    url: str | None = Field(
-        default=None,
-        description="URL to running service accessible to this SkyPortal instance. "
-        "For example, http://localhost:5000/analysis/<service_name>.",
-    )
-    optional_analysis_parameters: str | dict[str, Any] | None = Field(
-        default=None,
-        description="Optional URL parameters that can be passed to the service, "
-        "along with a list of possible values (to be used in a dropdown UI).",
-    )
-    authentication_type: str | None = Field(
-        default=None,
-        description="Service authentication method. See "
-        "https://docs.python-requests.org/en/master/user/authentication/",
-    )
-    authinfo: str | None = Field(
-        default=None,
-        alias="_authinfo",
-        description="Authentication secrets for the service. Not needed if "
-        'authentication_type is "none". This should be a string that can be '
-        "parsed by the python json.loads() function and should contain the key "
-        "`authentication_type`.",
-    )
-    enabled: bool | None = Field(
-        default=None, description="Whether the service is enabled or not."
-    )
-    analysis_type: str | None = Field(default=None, description="Type of analysis.")
-    input_data_types: list[str] | None = Field(
-        default=None,
-        description="List of input data types that the service requires.",
-    )
-    timeout: float | None = Field(
-        default=None,
-        description="Max time in seconds to wait for the analysis service to "
-        "complete. Default is 3600.0.",
-    )
-    is_summary: bool | None = Field(
-        default=None,
-        description="Establishes that analysis results on the resource should be "
-        "considered a summary.",
-    )
-    display_on_resource_dropdown: bool | None = Field(
-        default=None,
-        description="Show this analysis service on the analysis dropdown of the "
-        "resource.",
-    )
-    upload_only: bool | None = Field(
-        default=None,
-        description="If true, the analysis service is an upload type, where the "
-        "user provides the input data.",
-    )
-    group_ids: list[int] | None = Field(
-        default=None,
-        description="List of group IDs corresponding to which groups should be "
-        "able to use the Analysis Service. Defaults to all of requesting user's "
-        "groups.",
-    )
-
-
-class AnalysisServicePatchBody(AnalysisServicePostBody):
-    """Request body for updating an Analysis Service (all fields optional)."""
-
-
-class AnalysisPostBody(BaseModel):
-    """Request body for running an analysis."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    show_parameters: bool = Field(
-        default=False, description="Whether to render the parameters of this analysis."
-    )
-    show_plots: bool = Field(
-        default=False, description="Whether to render the plots of this analysis."
-    )
-    show_corner: bool = Field(
-        default=False,
-        description="Whether to render the corner plots of this analysis.",
-    )
-    input_filters: dict[str, Any] | None = Field(
-        default_factory=dict, description="Filters to apply to the input data."
-    )
-    analysis_parameters: dict[str, Any] = Field(
-        default_factory=dict,
-        description="Dictionary of parameters to be passed thru to the analysis.",
-    )
-    group_ids: list[int] | None = Field(
-        default=None,
-        description="List of group IDs corresponding to which groups should be "
-        "able to view analysis results. Defaults to all of requesting user's "
-        "groups.",
-    )
-
-
-class AnalysisUploadBody(BaseModel):
-    """Request body for uploading an upload_only analysis result."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    analysis: dict[str, Any] = Field(
-        default_factory=dict, description="Results data of this analysis."
-    )
-    message: str = Field(
-        default="", description="Status message to store with the analysis."
-    )
-    show_parameters: bool = Field(
-        default=True, description="Whether to render the parameters of this analysis."
-    )
-    show_plots: bool = Field(
-        default=True, description="Whether to render the plots of this analysis."
-    )
-    show_corner: bool = Field(
-        default=True,
-        description="Whether to render the corner plots of this analysis.",
-    )
-    group_ids: list[int] | None = Field(
-        default=None,
-        description="List of group IDs corresponding to which groups should be "
-        "able to view analysis results. Defaults to all of requesting user's "
-        "groups.",
-    )
-
-
-class DefaultAnalysisPostBody(BaseModel):
-    """Request body for creating a default analysis."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    default_analysis_parameters: dict[str, Any] | str = Field(
-        default_factory=dict,
-        description="Dictionary of parameters to be passed thru to the analysis.",
-    )
-    source_filter: dict[str, Any] | str = Field(
-        default_factory=dict,
-        description="Dictionary of filters to apply to the input data.",
-    )
-    daily_limit: int | str = Field(
-        default=10, description="Maximum number of analyses to run per day."
-    )
-    group_ids: list[int] | None = Field(
-        default=None,
-        description="List of group IDs corresponding to which groups should be "
-        "able to view analysis results. Defaults to all of requesting user's "
-        "groups.",
-    )
-    show_parameters: bool = Field(
-        default=True, description="Whether to render the parameters of this analysis."
-    )
-    show_plots: bool = Field(
-        default=True, description="Whether to render the plots of this analysis."
-    )
-    show_corner: bool = Field(
-        default=True,
-        description="Whether to render the corner plots of this analysis.",
-    )
-
-
-class DefaultAnalysisPatchBody(BaseModel):
-    """Request body for updating a default analysis (all fields optional)."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    default_analysis_parameters: dict[str, Any] | str | None = Field(
-        default=None,
-        description="Dictionary of parameters to be passed thru to the analysis.",
-    )
-    source_filter: dict[str, Any] | str | None = Field(
-        default=None, description="Dictionary of filters to apply to the input data."
-    )
-    daily_limit: int | str | None = Field(
-        default=None, description="Maximum number of analyses to run per day."
-    )
-    group_ids: list[int] | None = Field(
-        default=None,
-        description="List of group IDs corresponding to which groups should be "
-        "able to view analysis results.",
-    )
-    show_parameters: bool | None = Field(
-        default=None, description="Whether to render the parameters of this analysis."
-    )
-    show_plots: bool | None = Field(
-        default=None, description="Whether to render the plots of this analysis."
-    )
-    show_corner: bool | None = Field(
-        default=None, description="Whether to render the corner plots of this analysis."
-    )
 
 
 class AnalysisServiceHandler(BaseHandler):
@@ -1474,50 +1492,6 @@ class AnalysisServiceHandler(BaseHandler):
             return self.success()
 
 
-class AnalysisGetQuery(BaseModel):
-    """Query parameters for retrieving analyses."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    single_fields: ClassVar[frozenset[str]] = frozenset(
-        {"objID", "includeFilename", "includeAnalysisData"}
-    )
-
-    objID: str | None = Field(
-        default=None,
-        description="Return any analysis on an object with ID objID",
-    )
-    analysisServiceID: int | None = Field(
-        default=None,
-        description=(
-            "ID of the analysis service used to create the analysis, used only "
-            "if no analysis_id is given"
-        ),
-    )
-    includeAnalysisData: bool = Field(
-        default=False,
-        description=(
-            "Boolean indicating whether to include the data associated with the "
-            "analysis in the response. Could be a large amount of data. Only "
-            "works for single analysis requests. Defaults to false."
-        ),
-    )
-    summaryOnly: bool = Field(
-        default=False,
-        description=(
-            "Boolean indicating whether to return only analyses that use analysis "
-            "services with `is_summary` set to true. Defaults to false."
-        ),
-    )
-    includeFilename: bool = Field(
-        default=False,
-        description=(
-            "Boolean indicating whether to include the filename of the data "
-            "associated with the analysis in the response. Defaults to false."
-        ),
-    )
-
-
 class AnalysisHandler(BaseHandler):
     @permissions(["Run Analyses"])
     async def post(
@@ -1607,12 +1581,15 @@ class AnalysisHandler(BaseHandler):
                 if user is None:
                     return self.error("Cannot find user.", status=400)
 
+                # preferences is nullable, and a user who has never saved any
+                # has None rather than an empty mapping.
+                preferences = user.preferences or {}
                 if (
-                    user.preferences.get("summary", {})
+                    preferences.get("summary", {})
                     .get("OpenAI", {})
                     .get("active", False)
                 ):
-                    user_pref_openai = user.preferences["summary"]["OpenAI"].copy()
+                    user_pref_openai = preferences["summary"]["OpenAI"].copy()
                     analysis_parameters["openai_api_key"] = user_pref_openai["apikey"]
                     user_pref_openai.pop("apikey", None)
                     user_pref_openai.pop("active", None)
@@ -1741,7 +1718,7 @@ class AnalysisHandler(BaseHandler):
             obj_id_path = None
         obj_id = obj_id_path or query.objID
         async with self.AsyncSession() as session:
-            if obj_id is not None:
+            if analysis_resource_type.lower() == "obj" and obj_id is not None:
                 stmt = Obj.select(self.current_user).where(Obj.id == obj_id)
                 obj = await session.scalar(stmt)
                 if obj is None:
@@ -1824,6 +1801,7 @@ class AnalysisHandler(BaseHandler):
                         analysis_dict["model_lightcurves"] = None
                         analysis_dict["model_spectrum"] = None
                         analysis_dict["model_spectrum_summary"] = None
+                        analysis_dict["model_spectrum_source"] = None
                         analysis_dict["model_name"] = None
                         analysis_dict["n_detections"] = None
                         try:
@@ -1841,6 +1819,12 @@ class AnalysisHandler(BaseHandler):
                             )
                             analysis_dict["model_spectrum_summary"] = adata.get(
                                 "model_spectrum_summary"
+                            )
+                            # Which spectrum the fit was made against, so the
+                            # overlay can say so rather than showing several
+                            # identically-named buttons.
+                            analysis_dict["model_spectrum_source"] = adata.get(
+                                "model_spectrum_source"
                             )
                             analysis_dict["model_name"] = adata.get("model_name")
                             analysis_dict["n_detections"] = adata.get("n_detections")
@@ -1889,12 +1873,164 @@ class AnalysisHandler(BaseHandler):
                         # the analysis service is not a summary service, so skip returning this analysis
                         continue
                     ret_array.append(analysis_dict)
+            elif analysis_resource_type.lower() == "gcn_event":
+                from ...models import GcnEventAnalysis
+
+                dateobs = obj_id_path or query.objID
+                if analysis_id is not None:
+                    analysis = await session.scalar(
+                        GcnEventAnalysis.select(self.current_user)
+                        .options(selectinload(GcnEventAnalysis.groups))
+                        .where(GcnEventAnalysis.id == analysis_id)
+                    )
+                    if analysis is None:
+                        return self.error("Cannot access this Analysis.", status=403)
+                    analysis_dict = recursive_to_dict(analysis)
+                    if "analysis_parameters" in analysis_dict:
+                        analysis_dict["analysis_parameters"].pop("openai_api_key", None)
+                    service = await session.scalar(
+                        AnalysisService.select(self.current_user).where(
+                            AnalysisService.id == analysis.analysis_service_id
+                        )
+                    )
+                    if service is not None:
+                        analysis_dict["analysis_service_name"] = service.display_name
+                        analysis_dict["analysis_service_description"] = (
+                            service.description
+                        )
+                    analysis_dict["num_plots"] = analysis.number_of_analysis_plots
+                    if query.includeFilename:
+                        analysis_dict["filename"] = analysis._full_name
+                    analysis_dict["groups"] = analysis.groups
+                    if query.includeAnalysisData:
+                        analysis_dict["data"] = analysis.data
+                    return self.success(data=analysis_dict)
+
+                stmt = GcnEventAnalysis.select(self.current_user).options(
+                    selectinload(GcnEventAnalysis.groups)
+                )
+                if dateobs:
+                    import arrow
+
+                    stmt = stmt.where(
+                        GcnEventAnalysis.dateobs == arrow.get(dateobs).naive
+                    )
+                if query.analysisServiceID:
+                    stmt = stmt.where(
+                        GcnEventAnalysis.analysis_service_id == query.analysisServiceID
+                    )
+                analyses = (await session.scalars(stmt)).unique().all()
+                ret_array = []
+                for a in analyses:
+                    analysis_dict = recursive_to_dict(a)
+                    if "analysis_parameters" in analysis_dict:
+                        analysis_dict["analysis_parameters"].pop("openai_api_key", None)
+                    analysis_dict["groups"] = [
+                        {"id": g.id, "name": g.name} for g in a.groups
+                    ]
+                    ret_array.append(analysis_dict)
             else:
                 return self.error(
-                    f"analysis_resource_type must be one of {', '.join(['obj'])}",
+                    f"analysis_resource_type must be one of {', '.join(['obj', 'gcn_event'])}",
                     status=404,
                 )
             return self.success(data=ret_array)
+
+    @permissions(["Run Analyses"])
+    async def patch(
+        self,
+        analysis_resource_type: str,
+        analysis_id: int,
+        *,
+        body: AnalysisPatchBody = None,
+    ):
+        """
+        ---
+        summary: Re-share an analysis with a set of groups
+        description: |
+          Change which groups can see an existing analysis and its annotation,
+          e.g. share a privately-run fit with a group later, or make it private
+          again by scoping it to only the requester's single-user group. Author
+          only.
+        tags:
+          - analysis
+        responses:
+          200:
+            content:
+              application/json:
+                schema: Success
+          400:
+            content:
+              application/json:
+                schema: Error
+        """
+        body = self.parse_body(AnalysisPatchBody)
+        try:
+            analysis_id = int(analysis_id)
+        except (TypeError, ValueError):
+            return self.error(f"Invalid analysis_id: {analysis_id}")
+        if analysis_resource_type.lower() != "obj":
+            return self.error("Invalid analysis resource type", status=403)
+
+        async with self.AsyncSession() as session:
+            analysis = await session.scalar(
+                ObjAnalysis.select(self.current_user, mode="update")
+                .join(ObjAnalysis.analysis_service)
+                .options(contains_eager(ObjAnalysis.analysis_service))
+                .options(
+                    selectinload(ObjAnalysis.author),
+                    selectinload(ObjAnalysis.groups),
+                    selectinload(ObjAnalysis.obj),
+                )
+                .where(ObjAnalysis.id == analysis_id)
+            )
+            if analysis is None:
+                return self.error("Cannot access this Analysis.", status=403)
+
+            if not body.group_ids:
+                return self.error("Must supply at least one group_id.")
+            groups_result = await session.scalars(
+                Group.select(self.current_user).where(Group.id.in_(body.group_ids))
+            )
+            groups = groups_result.unique().all()
+            if {g.id for g in groups} != set(body.group_ids):
+                return self.error(
+                    f"Cannot find one or more groups with IDs: {body.group_ids}."
+                )
+
+            analysis.groups = groups
+
+            # Move this user's per-run annotation to the new groups. A run scoped
+            # to the author's single-user group is written by the webhook with a
+            # username-namespaced origin, which stays fixed once created; match on
+            # it directly (independent of the analysis's current groups) so we
+            # never touch the canonical shared annotation.
+            per_user_origin = (
+                f"{analysis.analysis_service.name} [{analysis.author.username}]"
+            )
+            existing = await session.scalars(
+                sa.select(Annotation)
+                .options(selectinload(Annotation.groups))
+                .where(
+                    Annotation.obj_id == analysis.obj_id,
+                    Annotation.author_id == analysis.author_id,
+                    Annotation.origin == per_user_origin,
+                )
+            )
+            for ann in existing.unique().all():
+                ann.groups = groups
+
+            await session.commit()
+
+            try:
+                Flow().push(
+                    "*",
+                    "skyportal/REFRESH_OBJ_ANALYSES",
+                    payload={"obj_key": analysis.obj.internal_key},
+                )
+            except Exception:
+                pass
+            return self.success()
 
     @permissions(["Run Analyses"])
     async def delete(self, analysis_resource_type: str, analysis_id: int):
@@ -1962,22 +2098,33 @@ class AnalysisHandler(BaseHandler):
                     log(f"Error pushing updates to source: {e}")
 
                 return self.success()
+            elif analysis_resource_type.lower() == "gcn_event":
+                from ...models import GcnEventAnalysis
+
+                analysis = await session.scalar(
+                    GcnEventAnalysis.select(self.current_user).where(
+                        GcnEventAnalysis.id == analysis_id
+                    )
+                )
+                if analysis is None:
+                    return self.error("Cannot access this Analysis.", status=403)
+                dateobs = analysis.dateobs
+                await session.delete(analysis)
+                await session.commit()
+                try:
+                    Flow().push(
+                        "*",
+                        "skyportal/REFRESH_GCNEVENT",
+                        payload={"gcnEvent_dateobs": dateobs.isoformat()},
+                    )
+                except Exception as e:
+                    log(f"Error pushing updates to event: {e}")
+                return self.success()
             else:
                 return self.error(
-                    f"analysis_resource_type must be one of {', '.join(['obj'])}",
+                    f"analysis_resource_type must be one of {', '.join(['obj', 'gcn_event'])}",
                     status=404,
                 )
-
-
-class AnalysisProductsGetQuery(BaseModel):
-    """Query parameters for retrieving an analysis product."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    download: bool = Field(
-        default=False,
-        description="Download the results as a file",
-    )
 
 
 class AnalysisProductsHandler(BaseHandler):
@@ -2022,82 +2169,84 @@ class AnalysisProductsHandler(BaseHandler):
         query = self.parse_query(AnalysisProductsGetQuery)
 
         async with self.AsyncSession() as session:
-            if analysis_resource_type.lower() == "obj":
-                if analysis_id is not None:
-                    stmt = ObjAnalysis.select(self.current_user).where(
-                        ObjAnalysis.id == analysis_id
-                    )
-                    analysis = await session.scalar(stmt)
-                    if analysis is None:
-                        return self.error("Cannot access this Analysis.", status=403)
-
-                    if analysis.data in [None, {}]:
-                        return self.error(
-                            "No data found for this Analysis.", status=404
-                        )
-
-                    if product_type.lower() == "results":
-                        if not analysis.has_results_data:
-                            return self.error(
-                                "No results data found for this Analysis.", status=404
-                            )
-
-                        result = analysis.serialize_results_data()
-
-                        if result:
-                            if query.download:
-                                filename = f"analysis_{analysis.obj_id}.json"
-                                buf = io.BytesIO()
-                                buf.write(json.dumps(result).encode("utf-8"))
-                                buf.seek(0)
-
-                                await self.send_file(buf, filename, output_type="json")
-                                return
-                            else:
-                                return self.success(data=result)
-                        else:
-                            return self.error(
-                                "No results data found for this Analysis.", status=404
-                            )
-                    elif product_type.lower() == "plots":
-                        if not analysis.has_plot_data:
-                            return self.error(
-                                "No plot data found for this Analysis.", status=404
-                            )
-                        try:
-                            plot_number = int(plot_number)
-                        except Exception as e:
-                            return self.error(
-                                f"plot_number must be an integer. {e}", status=400
-                            )
-                        if (
-                            plot_number < 0
-                            or plot_number >= analysis.number_of_analysis_plots
-                        ):
-                            return self.error(
-                                "Invalid plot number. "
-                                f"There is/are {analysis.number_of_analysis_plots} plot(s) available for this analysis",
-                                status=404,
-                            )
-
-                        result = analysis.get_analysis_plot(plot_number=plot_number)
-                        if result is not None:
-                            output_data = result["plot_data"]
-                            output_type = result["plot_type"].lower()
-                            filename = f"analysis_{analysis.obj_id}_plot_{plot_number}.{output_type}"
-                            await self.send_file(
-                                output_data, filename, output_type=output_type
-                            )
-                            return
-                    else:
-                        return self.error(
-                            f"Invalid product type: {product_type}", status=404
-                        )
-            else:
+            analysis_cls = analysis_model_for(analysis_resource_type)
+            if analysis_cls is None:
                 return self.error(
-                    f"analysis_resource_type must be one of {', '.join(['obj'])}",
+                    f"analysis_resource_type must be one of {', '.join(['obj', 'gcn_event'])}",
                     status=404,
                 )
+            if analysis_id is not None:
+                analysis = await session.scalar(
+                    analysis_cls.select(self.current_user).where(
+                        analysis_cls.id == analysis_id
+                    )
+                )
+                if analysis is None:
+                    return self.error("Cannot access this Analysis.", status=403)
+
+                if analysis.data in [None, {}]:
+                    return self.error("No data found for this Analysis.", status=404)
+
+                # obj analyses label the file by obj_id; events have no obj_id.
+                label = getattr(analysis, "obj_id", None) or analysis.id
+
+                if product_type.lower() == "results":
+                    if not analysis.has_results_data:
+                        return self.error(
+                            "No results data found for this Analysis.", status=404
+                        )
+
+                    result = analysis.serialize_results_data()
+
+                    if result:
+                        if query.download:
+                            filename = f"analysis_{label}.json"
+                            buf = io.BytesIO()
+                            buf.write(json.dumps(result).encode("utf-8"))
+                            buf.seek(0)
+
+                            await self.send_file(buf, filename, output_type="json")
+                            return
+                        else:
+                            return self.success(data=result)
+                    else:
+                        return self.error(
+                            "No results data found for this Analysis.", status=404
+                        )
+                elif product_type.lower() == "plots":
+                    if not analysis.has_plot_data:
+                        return self.error(
+                            "No plot data found for this Analysis.", status=404
+                        )
+                    try:
+                        plot_number = int(plot_number)
+                    except Exception as e:
+                        return self.error(
+                            f"plot_number must be an integer. {e}", status=400
+                        )
+                    if (
+                        plot_number < 0
+                        or plot_number >= analysis.number_of_analysis_plots
+                    ):
+                        return self.error(
+                            "Invalid plot number. "
+                            f"There is/are {analysis.number_of_analysis_plots} plot(s) available for this analysis",
+                            status=404,
+                        )
+
+                    result = analysis.get_analysis_plot(plot_number=plot_number)
+                    if result is not None:
+                        output_data = result["plot_data"]
+                        output_type = result["plot_type"].lower()
+                        filename = f"analysis_{label}_plot_{plot_number}.{output_type}"
+                        await self.send_file(
+                            output_data, filename, output_type=output_type
+                        )
+                        return
+                else:
+                    return self.error(
+                        f"Invalid product type: {product_type}", status=404
+                    )
 
             return self.error("No data found for this Analysis.", status=404)
 
@@ -2481,11 +2630,20 @@ class DefaultAnalysisHandler(BaseHandler):
                         f"Cannot find one or more groups with IDs: {group_ids}."
                     )
 
-                # check that the source_filter keys are valid: either a
-                # list-of-dicts filter (classifications) or a scalar (group_id).
+                analysis_resource_type = (body.analysis_resource_type or "obj").lower()
+                if analysis_resource_type not in ("obj", "gcn_event"):
+                    return self.error(
+                        "analysis_resource_type must be 'obj' or 'gcn_event', "
+                        f"not {analysis_resource_type}."
+                    )
+
+                # check that the source_filter keys are valid: a list-of-dicts
+                # filter (classifications), a scalar (group_id), or a list-of-
+                # scalars filter (gcn_tags / notice_types) for gcn_event defaults.
                 if not set(source_filter.keys()).issubset(
                     set(DEFAULT_ANALYSIS_FILTER_TYPES.keys())
                     | set(DEFAULT_ANALYSIS_SCALAR_FILTERS.keys())
+                    | set(DEFAULT_ANALYSIS_LIST_FILTERS.keys())
                 ):
                     return self.error(f"Invalid source_filter: {source_filter}.")
 
@@ -2495,6 +2653,15 @@ class DefaultAnalysisHandler(BaseHandler):
                             return self.error(
                                 f"Invalid source_filter. Key {key} must be a "
                                 f"{DEFAULT_ANALYSIS_SCALAR_FILTERS[key].__name__}."
+                            )
+                    elif key in DEFAULT_ANALYSIS_LIST_FILTERS:
+                        if not isinstance(value, list) or not all(
+                            isinstance(v, DEFAULT_ANALYSIS_LIST_FILTERS[key])
+                            for v in value
+                        ):
+                            return self.error(
+                                f"Invalid source_filter. Key {key} must be a list of "
+                                f"{DEFAULT_ANALYSIS_LIST_FILTERS[key].__name__}."
                             )
                     elif isinstance(value, list):
                         for v in value:
@@ -2518,6 +2685,7 @@ class DefaultAnalysisHandler(BaseHandler):
 
                 default_analysis = DefaultAnalysis(
                     analysis_service=analysis_service,
+                    analysis_resource_type=analysis_resource_type,
                     default_analysis_parameters=default_analysis_parameters,
                     source_filter=source_filter,
                     stats=stats,

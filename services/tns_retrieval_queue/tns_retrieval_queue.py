@@ -13,7 +13,6 @@ import sqlalchemy as sa
 import tornado.escape
 import tornado.ioloop
 import tornado.web
-from sqlalchemy.orm import scoped_session, sessionmaker
 
 from baselayer.app.env import load_env
 from baselayer.app.flow import Flow
@@ -35,8 +34,6 @@ env, cfg = load_env()
 log = make_log("tns_queue")
 
 init_db(**cfg["database"])
-
-Session = scoped_session(sessionmaker())
 
 DEFAULT_RADIUS = 2.0 / 3600  # 2 arcsec in degrees
 

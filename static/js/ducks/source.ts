@@ -148,7 +148,9 @@ export const sourceApi = skyportalApi.injectEndpoints({
         url: `api/${analysis_resource_type}/analysis`,
         params,
       }),
-      providesTags: ["Source"],
+      // gcn_event analyses refresh on REFRESH_GCNEVENT; obj analyses on Source.
+      providesTags: (_result, _error, arg) =>
+        arg?.analysis_resource_type === "gcn_event" ? ["GcnEvent"] : ["Source"],
     }),
     getAnalysis: build.query<
       RouteData<"GET /api/{analysis_resource_type}/analysis/{analysis_id}">,
@@ -364,6 +366,8 @@ export const sourceApi = skyportalApi.injectEndpoints({
           body["group_ids"] = formData["group_ids"];
         if (formData["channel"] !== undefined)
           body["channel"] = formData["channel"];
+        if (formData["origin"] !== undefined)
+          body["origin"] = formData["origin"];
         if (formData["attachment"]) {
           body["attachment"] = await fileReaderPromise(formData["attachment"]);
         }
@@ -613,6 +617,16 @@ export const sourceApi = skyportalApi.injectEndpoints({
       }),
       invalidatesTags: (_result, _error, sourceID) => sourceTag(sourceID),
     }),
+    fetchAlma: build.mutation<
+      RouteData<"POST /api/sources/{obj_id}/annotations/alma">,
+      number | string
+    >({
+      query: (sourceID) => ({
+        url: `api/sources/${sourceID}/annotations/alma`,
+        method: "POST",
+      }),
+      invalidatesTags: (_result, _error, sourceID) => sourceTag(sourceID),
+    }),
     fetchWise: build.mutation<
       RouteData<"POST /api/sources/{obj_id}/annotations/irsa">,
       number | string
@@ -714,11 +728,17 @@ export const sourceApi = skyportalApi.injectEndpoints({
       {
         id: number | string;
         analysis_service_id: number | string;
+        analysis_resource_type?: string;
         formData?: Record<string, any> | undefined;
       }
     >({
-      query: ({ id, analysis_service_id, formData = {} }) => ({
-        url: `api/obj/${id}/analysis/${analysis_service_id}`,
+      query: ({
+        id,
+        analysis_service_id,
+        analysis_resource_type = "obj",
+        formData = {},
+      }) => ({
+        url: `api/${analysis_resource_type}/${id}/analysis/${analysis_service_id}`,
         method: "POST",
         body: formData,
       }),
@@ -728,13 +748,32 @@ export const sourceApi = skyportalApi.injectEndpoints({
       any,
       {
         analysis_id: number | string;
+        analysis_resource_type?: string;
         formData?: Record<string, any> | undefined;
       }
     >({
-      query: ({ analysis_id, formData = {} }) => ({
-        url: `api/obj/analysis/${analysis_id}`,
+      query: ({
+        analysis_id,
+        analysis_resource_type = "obj",
+        formData = {},
+      }) => ({
+        url: `api/${analysis_resource_type}/analysis/${analysis_id}`,
         method: "DELETE",
         body: formData,
+      }),
+      invalidatesTags: ["Source"],
+    }),
+    updateAnalysis: build.mutation<
+      any,
+      {
+        analysis_id: number | string;
+        group_ids: number[];
+      }
+    >({
+      query: ({ analysis_id, group_ids }) => ({
+        url: `api/obj/analysis/${analysis_id}`,
+        method: "PATCH",
+        body: { group_ids },
       }),
       invalidatesTags: ["Source"],
     }),
@@ -781,6 +820,8 @@ invalidateOnMessage(REFRESH_SOURCE_POSITION, (payload, getState) => {
   return objId != null ? [{ type: "SourcePosition", id: objId }] : null;
 });
 invalidateOnMessage(REFRESH_OBJ_ANALYSES, () => ["Source"]);
+// gcn_event analyses list refreshes when a gcn_event analysis completes.
+invalidateOnMessage("skyportal/REFRESH_GCNEVENT", () => ["GcnEvent"]);
 
 export const {
   useGetSourceQuery,
@@ -829,6 +870,7 @@ export const {
   useShareDataMutation,
   useUploadPhotometryMutation,
   useCopySourcePhotometryMutation,
+  useFetchAlmaMutation,
   useFetchGaiaMutation,
   useFetchWiseMutation,
   useFetchVizierMutation,
@@ -841,4 +883,5 @@ export const {
   useAddGCNCrossmatchMutation,
   useStartAnalysisMutation,
   useDeleteAnalysisMutation,
+  useUpdateAnalysisMutation,
 } = sourceApi;

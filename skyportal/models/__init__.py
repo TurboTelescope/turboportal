@@ -56,6 +56,7 @@ from .source_view import *
 from .spatial_catalog import *
 from .spectrum import *
 from .stream import *
+from .summary_embedding import *
 from .super_obj import *
 from .survey_efficiency import *
 from .tag import *
@@ -64,6 +65,7 @@ from .team import *
 from .telescope import *
 from .terms_of_service import *
 from .thumbnail import *
+from .user_application import *
 from .user_notification import *
 from .user_token import *
 from .weather import *

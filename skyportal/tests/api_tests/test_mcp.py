@@ -121,6 +121,8 @@ def test_mcp_tools_list(view_only_token):
         "get_analyses",
         "get_analysis",
         "run_analysis",
+        "get_comments",
+        "post_comment",
         "get_gcn_events",
         "get_gcn_event",
         "get_gcn_event_extractions",
@@ -408,6 +410,11 @@ def test_mcp_tool_request_mapping():
     assert run_tool("post_photometry", {})[0][0][1] == "/api/photometry"
     assert run_tool("post_spectrum", {})[0][0][1] == "/api/spectrum"
 
+    calls, _ = run_tool("get_comments", {"obj_id": "X"})
+    assert calls == [("GET", "/api/sources/X/comments", None, None)]
+    calls, _ = run_tool("post_comment", {"obj_id": "X", "text": "triage"})
+    assert calls == [("POST", "/api/sources/X/comments", None, {"text": "triage"})]
+
 
 def test_analysis_tool_request_mapping():
     calls, _ = run_tool("list_analysis_services", {})
@@ -692,6 +699,24 @@ def test_mcp_gcn_comment_round_trip(gcn_GW190814, super_admin_token):
     assert "Follow-up requested." in texts
 
 
+def test_mcp_source_comment_round_trip(public_source, super_admin_token):
+    """A source comment is where the agent path records an LLM triage verdict."""
+    text = f"FLARE triage: needs_spectrum. {uuid.uuid4()}"
+    status, data = _call(
+        "post_comment",
+        {"obj_id": public_source.id, "text": text},
+        super_admin_token,
+    )
+    assert status == 200, data
+
+    status, data = _call(
+        "get_comments", {"obj_id": public_source.id}, super_admin_token
+    )
+    assert status == 200, data
+    texts = [c["text"] for c in data["result"]["structuredContent"]]
+    assert text in texts
+
+
 # ─── Broker filter tools ────────────────────────────────────────────────────
 
 
@@ -777,3 +802,23 @@ def test_observation_plan_tool_schemas():
     assert TOOLS["get_observation_plan_form"]["inputSchema"]["properties"] == {}
     for name in ("get_observation_plan_allocations", "get_observation_plans"):
         assert TOOLS[name]["inputSchema"]["required"] == []
+
+
+def test_every_state_changing_tool_is_marked_as_writing():
+    """The assistant offers only readOnlyHint tools, so a write mis-marked as
+    read-only is one it may call unprompted."""
+    from skyportal.handlers.mcp import TOOLS
+
+    offered = {
+        name for name, tool in TOOLS.items() if tool["annotations"]["readOnlyHint"]
+    }
+    # run_broker_filter previews a pipeline without saving, so it is genuinely read-only
+    write_shaped = {
+        name
+        for name in offered
+        if name.startswith(("post_", "delete_", "update_", "activate_"))
+        or (name.startswith("run_") and name != "run_broker_filter")
+    }
+    assert not write_shaped, (
+        f"offered to the assistant but changes state: {write_shaped}"
+    )

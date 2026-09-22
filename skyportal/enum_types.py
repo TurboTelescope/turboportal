@@ -96,7 +96,13 @@ LISTENER_CLASSES = LISTENERS
 LISTENER_CLASSNAMES = [c.__name__ for c in LISTENERS]
 
 
-ANALYSIS_TYPES = ("lightcurve_fitting", "spectrum_fitting", "meta_analysis")
+ANALYSIS_TYPES = (
+    "lightcurve_fitting",
+    "spectrum_fitting",
+    "meta_analysis",
+    "gw_search",
+    "period_finding",
+)
 ANALYSIS_INPUT_TYPES = (
     "photometry",
     "spectra",
@@ -108,6 +114,8 @@ ANALYSIS_INPUT_TYPES = (
 DEFAULT_ANALYSIS_FILTER_TYPES = {"classifications": ["name", "probability"]}
 # Scalar (not list-of-dicts) filter keys; see create_default_analysis_on_save.
 DEFAULT_ANALYSIS_SCALAR_FILTERS = {"group_id": int, "spectrum": str}
+# List-of-scalar filter keys for gcn_event defaults; see create_default_gcnevent_analysis.
+DEFAULT_ANALYSIS_LIST_FILTERS = {"gcn_tags": str, "notice_types": str}
 AUTHENTICATION_TYPES = (
     "none",
     "header_token",

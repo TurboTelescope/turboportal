@@ -1,0 +1,182 @@
+"""Response models for ``/api/public_pages``."""
+
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from skyportal_py_models.groups import GroupResponse
+
+
+class PublicSourcePageOptionsResponse(BaseModel):
+    """Visibility state of each data section of a public source page."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    photometry: Literal["public", "private", "no data"] | None = None
+    classifications: Literal["public", "private", "no data"] | None = None
+    spectroscopy: Literal["public", "private", "no data"] | None = None
+    summary: Literal["public", "private", "no data"] | None = None
+
+
+class PublicSourcePageResponse(BaseModel):
+    """A published snapshot of a source (``PublicSourcePage``).
+
+    ``PublicSourcePage.to_dict`` returns exactly these keys, so the ``data``,
+    ``is_auto_published`` and ``release_id`` columns and the ``release``
+    relationship never reach the client; ``release_link_name`` is derived from
+    the release instead.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: int
+    source_id: str | None = None
+    release_link_name: str | None = None
+    is_visible: bool | None = None
+    created_at: datetime | None = None
+    hash: str | None = None
+    options: PublicSourcePageOptionsResponse | None = None
+
+
+class PublicReleaseResponse(BaseModel):
+    """A public release of source pages (``PublicRelease``).
+
+    ``group_ids`` is injected by the handler and lists only the owning groups
+    the calling user can access; ``groups`` and ``source_pages`` are
+    relationships that only appear when a handler eager-loads them.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: int
+    created_at: datetime | None = None
+    modified: datetime | None = None
+    name: str | None = None
+    link_name: str | None = None
+    description: str | None = None
+    is_visible: bool | None = None
+    auto_publish_enabled: bool | None = None
+    options: dict[str, Any] | None = None
+    group_ids: list[int] = Field(default_factory=list)
+    groups: list[GroupResponse] | None = None
+    source_pages: list[PublicSourcePageResponse] | None = None
+
+
+class PublicReleasePost(BaseModel):
+    """Payload for creating a public release."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    link_name: str
+    group_ids: list[int]
+    description: str | None = None
+    options: dict[str, Any] | None = None
+    is_visible: bool | None = None
+    auto_publish_enabled: bool | None = None
+
+
+class PublicReleaseUpdate(BaseModel):
+    """Payload for updating a public release."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    group_ids: list[int]
+    description: str | None = None
+    options: dict[str, Any] | None = None
+    is_visible: bool | None = None
+    auto_publish_enabled: bool | None = None
+
+
+class PublicReleasePostBody(BaseModel):
+    """Request body for creating a public release."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, description="Name of the release")
+    link_name: str | None = Field(
+        default=None,
+        description="URL-safe name identifying the release in its public URL",
+    )
+    group_ids: list[int] | None = Field(
+        default=None, description="IDs of the groups that can manage this release"
+    )
+    description: str = Field(default="", description="Description of the release")
+    is_visible: bool = Field(
+        default=True, description="Whether the release is publicly visible"
+    )
+    auto_publish_enabled: bool = Field(
+        default=False,
+        description="Whether sources saved to the release's groups are "
+        "automatically published",
+    )
+    options: dict[str, Any] = Field(
+        default_factory=dict, description="Options for the sources in this release"
+    )
+
+
+class PublicReleasePostResponse(BaseModel):
+    """ID of the newly created public release."""
+
+    id: int = Field(description="Public release ID")
+
+
+class PublicReleasePatchBody(BaseModel):
+    """Request body for updating a public release."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, description="Name of the release")
+    group_ids: list[int] | None = Field(
+        default=None, description="IDs of the groups that can manage this release"
+    )
+    description: str = Field(default="", description="Description of the release")
+    is_visible: bool = Field(
+        default=True, description="Whether the release is publicly visible"
+    )
+    auto_publish_enabled: bool = Field(
+        default=False,
+        description="Whether sources saved to the release's groups are "
+        "automatically published",
+    )
+    options: dict[str, Any] = Field(
+        default_factory=dict, description="Options for the sources in this release"
+    )
+
+
+class PublicSourcePagePostBody(BaseModel):
+    """Request body for creating a public page for a source."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    options: dict[str, Any] | None = Field(
+        default=None, description="Options to manage data to display publicly"
+    )
+    release_id: Any = Field(
+        default=None,
+        description="The ID of the public release where the public source page belongs",
+    )
+
+
+class PublicSourcePagePostResponse(BaseModel):
+    """ID of the newly created public source page."""
+
+    id: int = Field(description="Public source page ID")
+
+
+__all__ = [
+    "PublicReleasePatchBody",
+    "PublicReleasePost",
+    "PublicReleasePostBody",
+    "PublicReleasePostResponse",
+    "PublicReleaseResponse",
+    "PublicReleaseUpdate",
+    "PublicSourcePageOptionsResponse",
+    "PublicSourcePagePostBody",
+    "PublicSourcePagePostResponse",
+    "PublicSourcePageResponse",
+]

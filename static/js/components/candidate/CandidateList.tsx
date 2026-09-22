@@ -1,6 +1,6 @@
 import { useGetProfileQuery, useIsReadOnly } from "../../ducks/profile";
 import { useGetGroupsQuery } from "../../ducks/groups";
-import { useEffect, useRef, useState } from "react";
+import { Suspense, lazy, useEffect, useRef, useState } from "react";
 import { useAppDispatch, useAppSelector } from "../../types/hooks";
 import {
   useGetCandidatesQuery,
@@ -18,6 +18,8 @@ import ArrowDownward from "@mui/icons-material/ArrowDownward";
 import SortIcon from "@mui/icons-material/Sort";
 import Chip from "@mui/material/Chip";
 import Box from "@mui/material/Box";
+import ToggleButton from "@mui/material/ToggleButton";
+import ToggleButtonGroup from "@mui/material/ToggleButtonGroup";
 import Tooltip from "@mui/material/Tooltip";
 import Paper from "@mui/material/Paper";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
@@ -37,10 +39,15 @@ import ObjectTags from "../ObjectTags";
 import RejectButton from "../RejectButton";
 import VegaPhotometry from "../plot/VegaPhotometry";
 import Spinner from "../Spinner";
+
+const TrackScanner = lazy(() => import("../superobj/TrackScanner"));
 import AddClassificationsScanningPage from "./AddClassificationsScanningPage";
 import Button from "../Button";
 import DisplayPhotStats from "../source/DisplayPhotStats";
 import CandidatePlugins from "./CandidatePlugins";
+import ChatIcon from "@mui/icons-material/Chat";
+import { useCommentPanel } from "../../contexts/CommentPanelContext";
+import { MAIN_CHANNEL } from "../comment/channels";
 
 import { dec_to_dms, ra_to_hours } from "../../units";
 
@@ -718,6 +725,16 @@ const Candidate = ({
   totalMatches,
 }: CandidateProps) => {
   const { classes } = useStyles();
+  const { setTarget, setOpen, setSpace, setChannel } = useCommentPanel();
+  const isReadOnly = useIsReadOnly();
+
+  const openCandidateComments = () => {
+    setTarget({ type: "source", id: candidate.id, origin: "scanning" });
+    setSpace("comments");
+    setChannel(MAIN_CHANNEL);
+    setOpen(true);
+  };
+
   return (
     <Paper
       variant="outlined"
@@ -734,6 +751,21 @@ const Candidate = ({
           />
         </div>
         <div style={{ gridArea: "info", padding: "0 0 0 0.25rem" }}>
+          <div style={{ display: "flex", justifyContent: "flex-end" }}>
+            <Tooltip title="Comment on candidate">
+              <span>
+                <IconButton
+                  aria-label="comment on candidate"
+                  data-testid={`comment-candidate-${candidate.id}`}
+                  onClick={openCandidateComments}
+                  disabled={isReadOnly}
+                  size="small"
+                >
+                  <ChatIcon fontSize="small" />
+                </IconButton>
+              </span>
+            </Tooltip>
+          </div>
           <CandidateInfo candidateObj={candidate} filterGroups={filterGroups} />
         </div>
         <div style={{ gridArea: "photometry" }}>
@@ -777,7 +809,17 @@ const Candidate = ({
 
 Candidate.displayName = "Candidate";
 
+/**
+ * Scanning modes. Most filters are scanned one object at a time; a filter whose
+ * alerts are linked moving-object tracks is scanned one track at a time, since
+ * the judgement is whether N epochs are the same body. A moving-object filter
+ * may still want the per-object list (an active-asteroid filter is an ordinary
+ * light-curve filter), so this is the reviewer's choice rather than inferred.
+ */
+type ScanMode = "objects" | "tracks";
+
 const CandidateList = () => {
+  const [scanMode, setScanMode] = useState<ScanMode>("objects");
   const ref = useRef<any>(null);
   const [queryInProgress, setQueryInProgress] = useState(false);
   const [filterGroups, setFilterGroups] = useState<any[]>([]);
@@ -867,7 +909,29 @@ const CandidateList = () => {
 
   return (
     <div style={{ position: "relative" }} data-testid="tour-candidates-page">
-      <div data-testid="tour-candidates-filter">
+      <Box sx={{ mb: 1 }}>
+        <ToggleButtonGroup
+          size="small"
+          exclusive
+          value={scanMode}
+          onChange={(_event, value) => value && setScanMode(value as ScanMode)}
+          data-testid="candidate-scan-mode"
+        >
+          <ToggleButton value="objects">Sources</ToggleButton>
+          <ToggleButton value="tracks">Moving object tracks</ToggleButton>
+        </ToggleButtonGroup>
+      </Box>
+
+      {scanMode === "tracks" && (
+        <Suspense fallback={<Spinner />}>
+          <TrackScanner />
+        </Suspense>
+      )}
+
+      <div
+        data-testid="tour-candidates-filter"
+        style={{ display: scanMode === "tracks" ? "none" : undefined }}
+      >
         <FilterCandidateList
           userAccessibleGroups={userAccessibleGroups}
           setQueryInProgress={setQueryInProgress}

@@ -91,7 +91,12 @@ app:
   # own environment: `executable` must resolve there.
   m4opt:
     enabled: false
+    # `local` preserves the traditional deployment: invoke the configured
+    # executable in the SkyPortal environment. `remote` sends the sky map and
+    # schedule request to a private M4OPT worker.
+    deployment: local
     executable: m4opt
+    endpoint:
     # Which MILP solver runs the schedule. Deliberately not offered in the
     # request form: it is a property of the deployment, not of the science, and
     # picking one the server has no license for only produces a failure. scip
@@ -312,6 +317,8 @@ app:
       component: followup_request/FollowupRequestPage
     - path: "/user_management"
       component: user/UserManagement
+    - path: "/user_applications"
+      component: user/UserApplications
     - path: "/upload_spectrum/:id"
       component: spectrum/UploadSpectrum
     - path: "/observability/:id"
@@ -326,6 +333,9 @@ app:
       anonymous_ok: true
     - path: "/gcn_events/:dateobs"
       component: gcn/GcnEventPage
+      anonymous_ok: true
+    - path: "/gcn_events/:dateobs/analysis/:analysis_id"
+      component: source/GcnEventAnalysisPage
       anonymous_ok: true
     - path: "/mmadetectors"
       component: mma_detector/MMADetectorPage
@@ -504,6 +514,11 @@ app:
         - name: Scanning report
           icon: Summarize
           url: /candidates/scan_reports
+
+        - name: Account applications
+          icon: HowToReg
+          enabled_if: canDecideUserApplications # a /api/config flag
+          url: /user_applications
 
     - name: Admin
       icon: AdminPanelSettings
@@ -754,13 +769,6 @@ database:
     idle_transaction_timeout: 0
 
 server:
-  # From https://console.developers.google.com/
-  #
-  # - Create Client ID
-  # - Javascript origins: https://localhost:5000
-  # - Authorized redirect URLs: http://localhost:5000/complete/google-oauth2/
-  #
-  # You need to have Google+ API enabled; it takes a few minutes to activate.
   host: localhost
   port: 5000 # This is the public-facing port
 
@@ -802,6 +810,13 @@ server:
   # These trusted addresses are used to uncover the originating IP.
   loadbalancer_ips: []
 
+  # From https://console.developers.google.com/
+  #
+  # - Create Client ID
+  # - Javascript origins: https://localhost:5000
+  # - Authorized redirect URLs: http://localhost:5000/complete/google-oauth2/
+  #
+  # You need to have Google+ API enabled; it takes a few minutes to activate.
   auth:
     debug_login: True
     google_oauth2_key:
@@ -809,7 +824,21 @@ server:
     google_oauth2_timeout: 15
 
 services:
-  dask: False
+  disabled: # UNCOMMENT to disable a service
+    - dask
+    # - facility_queue
+    # - jpl_sbident_queue
+    # - ngsf_analysis_service
+    # - observation_plan_queue
+    # - openai_analysis_service
+    # - pdl_service
+    # - recurring_apis
+    # - reminders
+    # - sharing_service_submission_queue
+    # - slack
+    # - sn_analysis_service
+    # - spectral_cube_analysis_service
+    # - thumbnail_queue
 
 # Alert brokers (BOOM, Fink, Lasair, ...) are configured at runtime as
 # `Broker` database records (name + provider class + encrypted credentials), not
@@ -873,7 +902,6 @@ misc:
   cosmology: Planck18
   #cosmology: {H0: "65.0", Om0: 0.3, Ode0: 0.7, name: 'skyportal_user_cosmo'}
 
-  dustmap: sfd
   # Vendored in the skyportal-data submodule so the SFD maps are present
   # without a network fetch at startup. obj.py still falls back to fetching
   # if the files are absent (e.g. submodule not initialized).
@@ -954,27 +982,23 @@ cron:
   #   script: jobs/delete_unsaved_candidates.py
   #   limit: ["01:00", "02:00"]
 
-twilio:
-  # Twilio Sendgrid API configs
+# This value needs to be either "sendgrid" or "smtp" (without quotes)
+email_service:
+twilio: # TODO: DEPRECATED Twilio Sendgrid no longer offers a free tier. Use SMTP instead.
   # This needs to be set to a valid, Sendgrid-registered address in config.yaml
   from_email:
   # This needs to be obtained via Sendgrid setup on their site
   sendgrid_api_key:
-
   # Twilio SMS API configs
-  # These values must be valid ones from the Twitter API console
+  # These values must be valid ones from the Twilio API console
   from_number:
   sms_account_sid:
   sms_auth_token:
-
 smtp:
   from_email: # This is both the email used to authenticate with smtplib and the sender address
   password:
   host: smtp.gmail.com # Default Gmail settings; modify as needed
   port: 587 # Default Gmail settings; modify as needed
-
-# This value needs to be either "sendgrid" or "smtp" (without quotes)
-email_service:
 
 invitations:
   enabled: False # If debug_login=True above, invite tokens won't be used during auth
@@ -985,6 +1009,20 @@ invitations:
     Welcome to <b>SkyPortal</b>!
     <br />
     Some other text here.
+
+# Lets people without an account apply for one, from a form on the login page
+# and at /apply. Approving an application issues the invitation they sign up
+# with, so this requires invitations.enabled.
+user_applications:
+  enabled: False
+  # Who acts on an application. False: only "Manage users" administrators.
+  # True: peer endorsement, where any user holding the "Endorse users" ACL can
+  # vouch for one, as arXiv and GCN do.
+  peer_endorsement: False
+  disable_emailing: False # If True, the named endorser is notified in-app only
+  email_subject: "A new user application awaits your endorsement"
+  form_preamble: | # Shown above the application form; can include HTML tags
+    Tell us who you are, and name an existing user who can vouch for you.
 
 notifications:
   enabled: True
@@ -1013,7 +1051,7 @@ spectrum_types:
 
 cross_match:
   gaia:
-    catalog: "gaiaedr3.gaia_source"
+    catalog: gaiadr3.gaia_source
     radius: 2.0
     limmag: 20.5
     number: 1
@@ -1240,8 +1278,6 @@ hosts:
   assistant: 127.0.0.1
   slack: 127.0.0.1
 
-# JPL Scout NEO Target-of-Opportunity candidates, published by
-# lsst-sssc/scout-alert-bridge. Leave `topic` unset to disable the service.
 assignments:
   # An uploaded spectrum marks a matching observing-run assignment "done".
   # A spectrum naming its assignment always settles it; otherwise the run's
@@ -1260,6 +1296,8 @@ tess:
   group_ids: [] # groups the annotations are visible to
   bot_user_id: # user recorded as the annotation author
 
+# JPL Scout NEO Target-of-Opportunity candidates, published by
+# lsst-sssc/scout-alert-bridge. Leave `topic` unset to disable the service.
 scout:
   topic: # e.g. lco.scout-neo-too-test
   kafka_server: kafka.scimma.org
@@ -1308,6 +1346,7 @@ gcn:
       - gcn.classic.voevent.SWIFT_XRT_POSITION
       # - gcn.classic.voevent.AMON_ICECUBE_COINC
       # - gcn.classic.voevent.AMON_ICECUBE_HESE
+      - gcn.classic.voevent.SNEWS
       - gcn.classic.voevent.ICECUBE_ASTROTRACK_GOLD
       - gcn.classic.voevent.ICECUBE_ASTROTRACK_BRONZE
       # - gcn.classic.voevent.MAXI_UNKNOWN
@@ -1456,15 +1495,34 @@ analysis_services:
       model: o4-mini
       presence_penalty: 1.0
       prompt: Using markdown (including URL links), in one succinct (less than 250 words) paragraph written in the 3rd person summarize the following comments about this astronomical source.  If classifications and/or the redshift are given, then note those in the summary. This will be read by expert astrophysicists, so no need to explain known concepts and definitions.
+    # LLM triage of a classifier analysis (analysis_parameters.task="triage").
+    # Reuses the summary LLM settings and reads the analysis / posts the comment
+    # through the database, so it needs no key of its own. The caller can pass its
+    # own analysis_parameters.prompt; this is only the default when none is given.
+    triage:
+      prompt: You are an expert time-domain astronomer triaging a photometric transient from a machine classifier. Given the calibrated class probabilities, the conformal prediction set, credibility, the anomaly energy, the host/context features and the light curve, return STRICT JSON with keys summary, evidence, suggested_action, caveats. Do not restate the numbers verbatim; interpret them. The classifier's own rule-based verdict is authoritative; if you disagree, say so in caveats.
     embeddings_store:
       summary:
-        location: pinecone
-        api_key:
-        index_name: openai-skyportal-summary
-        index_size: 1536
+        # Where the summary vectors are kept. `pgvector` holds them in
+        # SkyPortal's own database; leave unset to switch the summary search
+        # off. Both this and `model` must be set for the search to run.
+        location:
+        # The embedding model. Vectors only compare with others from the same
+        # model, so reads are scoped to whatever is named here and a change
+        # leaves earlier vectors unread until each summary is embedded again.
         model: text-embedding-3-small
-        cloud: aws
-        region: us-east-1
+        # Any server speaking the OpenAI embeddings protocol; unset means
+        # OpenAI's own. `api_key` is the key it is reached with. Only OpenAI's
+        # own, left without one, falls back to the key the summary was made
+        # with, which may be a user's.
+        base_url:
+        api_key:
+        # Cosine similarity below which a source is not offered as similar to
+        # another source: 1 is identical, 0 unrelated, -1 opposite. What counts
+        # as close varies by model, so set this from the spread `model` actually
+        # produces. Unset shows the closest matches whatever they score. A text
+        # query is not cut, scoring much lower against any summary.
+        min_score: 0.9
 
 # Root for on-disk caches; everything under it is regenerable and safe to delete.
 cache_folder: cache

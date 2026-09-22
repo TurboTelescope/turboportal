@@ -64,6 +64,8 @@ from skyportal.utils.crossmatch import (
     credible_levels_in_localization,
     equatorial_to_galactic,
     great_circle_distance,
+    localization_moc,
+    moc_ascii,
     search_cone,
     skymap_consistency,
     skymap_overlap_integral,
@@ -86,7 +88,24 @@ DEFAULTS = {
     "cumprob": DEFAULT_CUMPROB,
     # Per-filter cut on a match's credible level. None keeps all of cumprob.
     "max_credible_level": None,
-    "max_alerts": 500,
+    # A wide localization returns far more than a cone: the widest Fermi GBM
+    # region measured here yields a few hundred alerts a slice after the quality
+    # cuts, and truncation here is silent, so leave headroom.
+    "max_alerts": 10000,
+    # Which end of the window survives truncation at max_alerts. A counterpart
+    # search wants the alerts nearest the trigger, so those filters set
+    # "Ascending"; the default keeps the newest, as a live event feed wants.
+    "sort_order": "Descending",
+    # A GRB counterpart's first detection follows the trigger and its light
+    # curve is short. Both are relative to the event, so they cannot live in the
+    # broker-side filter, which is the same pipeline for every event. None
+    # leaves the history unconstrained.
+    "max_days_to_first_detection": None,
+    "max_detection_span_days": None,
+    # Epochs required before an alert is a counterpart worth showing. Forced
+    # photometry can supply them, so this is not ndethist alone. None leaves the
+    # count to the broker-side filter.
+    "min_detections": None,
     # One-shot search of the window before the event, to spot positions that
     # were already active and so cannot be counterparts.
     "archival": True,
@@ -283,10 +302,14 @@ def build_annotation_data(
 
     position = alert_position(alert)
     if position is not None:
-        separation = float(great_circle_distance(ra0, dec0, *position))
-        data["distance_arcmin"] = round(separation * 60.0, 4)
-        if radius_deg:
-            data["distance_ratio"] = round(separation / radius_deg, 4)
+        # A region search has no centre to measure from, so the distance fields
+        # are omitted rather than filled with a number that means nothing. Key
+        # absence is what a scanner filter already treats as "not applicable".
+        if ra0 is not None and dec0 is not None:
+            separation = float(great_circle_distance(ra0, dec0, *position))
+            data["distance_arcmin"] = round(separation * 60.0, 4)
+            if radius_deg:
+                data["distance_ratio"] = round(separation / radius_deg, 4)
         gal_lat, gal_long = equatorial_to_galactic(*position)
         data["gal_lat"] = round(float(gal_lat), 4)
         data["gal_long"] = round(float(gal_long), 4)
@@ -506,12 +529,27 @@ async def process_event_filter(
             int(conf(config, "credible_level")), math.ceil(cumprob * 100)
         ),
     )
-    if cone is None:
+    # A localization no single cone bounds usefully is searched as its own
+    # region instead. Only the pipeline path can carry one, so a provider
+    # without filter support still has nothing to query with.
+    moc = None
+    supports_moc = (
+        filter_.broker.broker_class.implements().get("filter_pipeline") == "mongo"
+    )
+    if cone is None and supports_moc:
+        moc = localization_moc(
+            localization,
+            credible_level=max(
+                int(conf(config, "credible_level")), math.ceil(cumprob * 100)
+            ),
+        )
+
+    if cone is None and moc is None:
         state.status = "skipped"
         state.last_queried = utcnow_naive()
         return 0
 
-    ra0, dec0, radius = cone
+    ra0, dec0, radius = cone if cone is not None else (None, None, None)
     event_jd = float(Time(event.dateobs).jd)
 
     if archival:
@@ -527,6 +565,28 @@ async def process_event_filter(
         if state.last_alert_jd is not None:
             jd_start = max(jd_start, state.last_alert_jd)
         jd_end = event_jd + float(conf(config, "delta_t_after"))
+        # The history cuts cap the epoch of anything that can match: a first
+        # detection no later than the trigger plus one window, and an alert no
+        # later than that first detection plus the span. Searching past that is
+        # provably empty, and the broker walks a wide window in slices, so the
+        # saving is whole requests rather than rows.
+        horizon = detection_horizon(
+            event_jd,
+            conf(config, "max_days_to_first_detection"),
+            conf(config, "max_detection_span_days"),
+        )
+        if horizon is not None:
+            jd_end = min(jd_end, horizon)
+
+    # The resume point can sit past the end of the window: state.last_alert_jd
+    # records how far a previous run got, so narrowing delta_t_after (or the
+    # history horizon) leaves nothing left to search. The broker rejects
+    # start >= end outright, which would fail the state on every retry.
+    if jd_start >= jd_end:
+        state.last_queried = utcnow_naive()
+        state.status = "done"
+        state.error = None
+        return 0
 
     broker = filter_.broker
     survey = filter_survey(filter_)
@@ -543,16 +603,35 @@ async def process_event_filter(
         # artifacts, asteroids and variable stars are rejected before they cross
         # the wire rather than after.
         cuts, cuts_source = await resolve_quality_pipeline(session, broker, filter_.id)
+        # First: the broker joins the alert history collection lazily, before the
+        # first stage that reads it, so a cut placed after that stage is applied
+        # to the joined set rather than shrinking it.
+        history = history_window_stages(
+            event_jd,
+            conf(config, "max_days_to_first_detection"),
+            conf(config, "max_detection_span_days"),
+        )
+        # Last: it reads the joined alert history, which the earlier stages
+        # have already shrunk.
+        detections = detection_count_stages(event_jd, conf(config, "min_detections"))
         result = broker.broker_class.test_filter(
             broker,
             session,
-            pipeline=[cone_match_stage(ra0, dec0, radius), *cuts],
+            pipeline=(
+                [cone_match_stage(ra0, dec0, radius), *history, *cuts, *detections]
+                if cone is not None
+                else [*history, *cuts, *detections]
+            ),
+            # BOOM prepends the region match itself, so the cuts reach it
+            # unchanged and a skymap event runs the same versioned filter a
+            # cone event does.
+            moc_ascii=(moc_ascii(moc) if moc is not None else None),
             survey=survey,
             permissions=permissions,
             start_jd=jd_start,
             end_jd=jd_end,
             sort_by="candidate.jd",
-            sort_order="Descending",
+            sort_order=str(conf(config, "sort_order")),
             limit=int(conf(config, "max_alerts")),
         )
         alerts = (
@@ -1122,6 +1201,139 @@ def distance_lookup(localization):
         return mu, sigma
 
     return lookup
+
+
+def detection_horizon(event_jd, max_days_to_first, max_span_days):
+    """Latest alert epoch that can satisfy both history cuts, or None.
+
+    Both are needed: without the span an alert may be arbitrarily late, and
+    without the first-detection window its start is unbounded.
+    """
+    if max_days_to_first is None or max_span_days is None:
+        return None
+    return float(event_jd) + float(max_days_to_first) + float(max_span_days)
+
+
+def history_window_stages(event_jd, max_days_to_first, max_span_days):
+    """Pipeline stages constraining an alert's detection history to the event.
+
+    ``max_days_to_first`` requires the object's first detection to fall between
+    the trigger and that many days after it: a counterpart cannot predate the
+    explosion, and one that appears a month later is not the same transient.
+    ``max_span_days`` caps the alert's own epoch against that first detection,
+    which rejects the long-lived variables that dominate a wide localization.
+    Per alert, the alert's epoch is the last detection, and a wider search is
+    walked in slices, so this is not implied by the query window.
+
+    ZTF field names. BOOM does not store ``jdendhist``, and a missing field
+    makes ``$subtract`` null, which compares as less than any bound -- so a span
+    written against it would pass everything. A survey without ``jdstarthist``
+    matches nothing, so leave these unset for those filters.
+    """
+    stages = []
+    if max_days_to_first is not None:
+        stages.append(
+            {
+                "$match": {
+                    "candidate.jdstarthist": {
+                        "$gte": float(event_jd),
+                        "$lte": float(event_jd) + float(max_days_to_first),
+                    }
+                }
+            }
+        )
+    if max_span_days is not None:
+        stages.append(
+            {
+                "$match": {
+                    "$expr": {
+                        "$lte": [
+                            {
+                                "$subtract": [
+                                    "$candidate.jd",
+                                    "$candidate.jdstarthist",
+                                ]
+                            },
+                            float(max_span_days),
+                        ]
+                    }
+                }
+            }
+        )
+    return stages
+
+
+# The signal-to-noise at which a forced-photometry epoch counts as a
+# detection. BOOM applies its own threshold before it sets ``isdiffpos`` at all,
+# so this is presently redundant -- it is stated to pin the meaning of "a
+# detection" here rather than inherit whatever the broker currently uses.
+FORCED_PHOT_SNR = 3.0
+
+
+def detection_count_stages(event_jd, min_detections):
+    """Require enough epochs that could belong to a counterpart.
+
+    An object with a single alert detection can still be one when forced
+    photometry supplies the rest, so those epochs count -- but only from the
+    trigger onwards. A forced detection before the burst says the position was
+    already active, which argues against a counterpart rather than for one, and
+    counting it would let pre-existing variability satisfy the requirement.
+
+    ``ndethist`` needs no such guard: ``max_days_to_first_detection`` already
+    places the first alert detection after the trigger.
+    """
+    if not min_detections:
+        return []
+    return [
+        {
+            "$match": {
+                "$expr": {
+                    "$or": [
+                        {"$gte": ["$candidate.ndethist", int(min_detections)]},
+                        {
+                            "$gte": [
+                                {
+                                    "$size": {
+                                        "$filter": {
+                                            "input": {"$ifNull": ["$fp_hists", []]},
+                                            "cond": {
+                                                "$and": [
+                                                    {
+                                                        "$eq": [
+                                                            "$$this.isdiffpos",
+                                                            True,
+                                                        ]
+                                                    },
+                                                    {
+                                                        "$gte": [
+                                                            {
+                                                                "$ifNull": [
+                                                                    "$$this.snr_psf",
+                                                                    0,
+                                                                ]
+                                                            },
+                                                            FORCED_PHOT_SNR,
+                                                        ]
+                                                    },
+                                                    {
+                                                        "$gte": [
+                                                            "$$this.jd",
+                                                            float(event_jd),
+                                                        ]
+                                                    },
+                                                ]
+                                            },
+                                        }
+                                    }
+                                },
+                                int(min_detections),
+                            ]
+                        },
+                    ]
+                }
+            }
+        }
+    ]
 
 
 def cone_match_stage(ra, dec, radius_deg):

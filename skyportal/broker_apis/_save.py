@@ -158,9 +158,17 @@ def build_photometry_groups(object_id, survey, data, instrument_id, programid2st
     # epoch can appear in more than one of these arrays (Lasair repeats
     # detections across prv_candidates and fp_hists). Postgres cannot resolve
     # duplicates that arrive in the same INSERT -- ON CONFLICT raises instead --
-    # so the whole object's photometry would be lost. Keep the first of each.
+    # so the whole object's photometry would be lost. Keep the first of each,
+    # so the arrays run from most to least informative about an epoch: an alert
+    # detection, else a forced measurement, else a bare upper limit. Forced
+    # photometry last would let a non-detection mask a forced detection at the
+    # same epoch, which is how a filter can pass an object on forced detections
+    # the light curve then does not show.
     seen: set = set()
-    for array_name in ["prv_candidates", "prv_nondetections", "fp_hists"]:
+    for array_name in ["prv_candidates", "fp_hists", "prv_nondetections"]:
+        # Forced photometry is separated by origin so it can be shown or hidden
+        # on its own; everything else keeps the default origin.
+        origin = "fp" if array_name == "fp_hists" else None
         for phot in data.get(array_name) or []:
             jd, band = phot.get("jd"), phot.get("band")
             if jd is None or band is None:
@@ -173,9 +181,11 @@ def build_photometry_groups(object_id, survey, data, instrument_id, programid2st
                 flux = phot.get("psfFlux")
                 flux_err *= 1e-9
                 if flux is not None and not np.isnan(flux):
+                    # Stored as measured, however faint: Photometry.mag already
+                    # yields null (an upper limit) for a flux that is not
+                    # positive, so a real but low-significance point stays a
+                    # detection here instead of being flattened into a limit.
                     flux *= 1e-9
-                    if not np.isnan(flux_err) and abs(flux) / flux_err <= 3:
-                        flux = np.nan
                 columns = {"flux": flux, "fluxerr": flux_err, "zp": zp}
             elif phot.get("magpsf") is not None and phot.get("sigmapsf") is not None:
                 # Magnitude space (e.g. Lasair): convert to flux with the survey
@@ -192,6 +202,8 @@ def build_photometry_groups(object_id, survey, data, instrument_id, programid2st
             programid = phot.get("programid", 1) if survey == "ZTF" else 1
             key = (survey, programid)
 
+            # An epoch already taken from an earlier array must not reappear,
+            # or the light curve carries it twice.
             epoch = (key, round(jd - 2400000.5, 8), _normalize_band(band))
             if epoch in seen:
                 continue
@@ -206,6 +218,9 @@ def build_photometry_groups(object_id, survey, data, instrument_id, programid2st
                     "instrument_id": instrument_id,
                     "mjd": [],
                     "filter": [],
+                    # Per point, so forced photometry keeps its own origin
+                    # without splitting the stream group it belongs to.
+                    "origin": [],
                     "magsys": [],
                     "ra": [],
                     "dec": [],
@@ -218,6 +233,7 @@ def build_photometry_groups(object_id, survey, data, instrument_id, programid2st
             pd = photometry_data[key]
             pd["mjd"].append(jd - 2400000.5)
             pd["filter"].append(_filter_name(survey, band))
+            pd["origin"].append(origin)
             pd["magsys"].append("ab")
             pd["ra"].append(phot.get("ra"))
             pd["dec"].append(phot.get("dec"))
@@ -479,10 +495,27 @@ async def _ingest_object(
         object_id, survey, data, instrument_id, programid2streamid
     )
 
+    # Whoever can see the object has to be able to see its light curve. With no
+    # group_ids the only group on the photometry is the ingesting account's own
+    # single-user group, so a scanner opens a new candidate to an empty plot --
+    # invisible for objects ZTF has seen before, whose points come from
+    # elsewhere too.
+    photometry_group_ids = set(saved_group_ids)
+    if filter_ids:
+        photometry_group_ids.update(
+            (
+                await session.scalars(
+                    sa.select(Filter.group_id).where(Filter.id.in_(filter_ids))
+                )
+            ).all()
+        )
+
     for pd in photometry_data.values():
         if pd["mjd"]:  # never post empty photometry (breaks JSON coercion)
             # Bulk ingestion must not inherit the sitewide default-share; keep
             # ingested photometry scoped to the object's stream/user groups.
+            if photometry_group_ids:
+                pd["group_ids"] = sorted(photometry_group_ids)
             try:
                 await add_external_photometry(
                     pd, user, session, apply_default_share=False

@@ -15,88 +15,30 @@ import tornado.escape
 import tornado.web
 import yaml
 from astropy.table import Table
-from pinecone import Pinecone
 from tornado.ioloop import IOLoop
 
 from baselayer.app.env import load_env
+from baselayer.app.models import init_db
 from baselayer.log import make_log
+from skyportal.utils.embedding_store_config import summary_embeddings_enabled
 
 _, cfg = load_env()
 log = make_log("openai_analysis_service")
 
+# The triage task reads the classification analysis and posts its comment through
+# the database (the service runs inside the deployment), so it connects on import.
+init_db(**cfg["database"])
+
 # Preamble: get the embeddings and summary parameters ready
-# for now, we only support pinecone embeddings
-summarize_embedding_config = cfg[
-    "analysis_services.openai_analysis_service.embeddings_store.summary"
-]
-pinecone_client = None
-USE_PINECONE = False
-if (
-    summarize_embedding_config.get("location") == "pinecone"
-    and summarize_embedding_config.get("api_key")
-    and summarize_embedding_config.get("index_name")
-    and summarize_embedding_config.get("index_size")
-):
-    log("initializing pinecone...")
-    pinecone_client = Pinecone(
-        api_key=summarize_embedding_config.get("api_key"),
-    )
-
-    summarize_embedding_index = summarize_embedding_config.get("index_name")
-    if summarize_embedding_index not in [
-        index.name for index in pinecone_client.list_indexes().indexes
-    ]:
-        # check if we have the spec variable in the config
-        pod_spec_required_keys = ["environment", "pod_type"]
-        serverless_spec_required_keys = ["cloud", "region"]
-
-        pod_spec_optional_keys = ["replicas", "pods", "shards"]
-
-        has_pod_spec = all(
-            summarize_embedding_config.get(k) is not None
-            for k in pod_spec_required_keys
-        )
-        has_serverless_spec = all(
-            summarize_embedding_config.get(k) is not None
-            for k in serverless_spec_required_keys
-        )
-
-        if has_pod_spec:
-            USE_PINECONE = True
-        else:
-            log(
-                "Pod spec not found in the config file, cannot create index in pinecone"
-            )
-
-        if USE_PINECONE:
-            spec = {
-                "pod": {
-                    "environment": summarize_embedding_config.get("environment"),
-                    "pod_type": summarize_embedding_config.get("pod_type"),
-                }
-            }
-            for k in pod_spec_optional_keys:
-                if summarize_embedding_config.get(k) is not None:
-                    spec["pod"][k] = summarize_embedding_config.get(k)
-            if has_serverless_spec:
-                spec = {
-                    "serverless": {
-                        "cloud": summarize_embedding_config.get("cloud"),
-                        "region": summarize_embedding_config.get("region"),
-                    }
-                }
-            pinecone_client.create_index(
-                summarize_embedding_index,
-                dimension=summarize_embedding_config.get("index_size"),
-                spec=spec,
-            )
-            log(f"index {summarize_embedding_index} created in pinecone")
-    else:
-        USE_PINECONE = True
-else:
-    log(
-        "Pinecone access does not seem to be configured in the config file, not using pinecone"
-    )
+summarize_embedding_config = (
+    cfg["analysis_services.openai_analysis_service.embeddings_store.summary"] or {}
+)
+# The embedding model is configured apart from the chat model.
+summarize_embedding_base_url = summarize_embedding_config.get("base_url") or None
+summarize_embedding_api_key = summarize_embedding_config.get("api_key") or None
+summarize_embedding_model = summarize_embedding_config.get("model")
+# This service only produces the vector; SkyPortal stores it when it comes back.
+EMBED_SUMMARIES = summary_embeddings_enabled(summarize_embedding_config)
 
 summary_config = copy.deepcopy(cfg["analysis_services.openai_analysis_service.summary"])
 if summary_config.get("api_key"):
@@ -313,42 +255,33 @@ def run_openai_summarization(data_dict):
     openai_summary = ". ".join(temp_summary).replace("\n", " ")
     result = {"summary": openai_summary}
 
-    if USE_PINECONE:
+    if EMBED_SUMMARIES:
+        # Only OpenAI itself, configured without a key of its own, is reached
+        # with the key this run was given, which may be the requesting user's.
+        embedding_key = summarize_embedding_api_key
+        if not embedding_key and not summarize_embedding_base_url:
+            embedding_key = analysis_parameters["openai_api_key"]
+        embedding_client = OpenAI(
+            api_key=embedding_key or "none",
+            base_url=summarize_embedding_base_url,
+        )
         try:
-            e = client.embeddings.create(
+            response = embedding_client.embeddings.create(
                 input=openai_summary,
-                model=summarize_embedding_config.get("model", "text-embedding-3-small"),
+                model=summarize_embedding_model,
             )
+            result["embedding"] = response.data[0].embedding
+            result["embedding_model"] = summarize_embedding_model
         except Exception as e:
-            log(f"OpenAI embedding failed {e}")
-            rez.update(
-                {
-                    "status": "failure",
-                    "message": f"OpenAI embedding failed: {e}",
-                }
-            )
-            return rez
-        pinecone_index = pinecone_client.Index(summarize_embedding_index)
-        metadata = {}
-        if z is not None:
-            metadata["redshift"] = z
-
-        if len(classifications) > 0:
-            metadata["class"] = list(set(classifications["classification"]))
-        else:
-            metadata["class"] = []
-
-        metadata["summary"] = openai_summary
-
-        pinecone_index.upsert([(source_id, e.data[0].embedding, metadata)])
-        result["embedding"] = e.data[0].embedding
+            # Unindexed, the summary is missing from the search, not lost.
+            log(f"Embedding the summary failed, returning it unindexed: {e}")
 
     f = tempfile.NamedTemporaryFile(suffix=".joblib", prefix="results_", delete=False)
     f.close()
     joblib.dump(result, f.name, compress=3)
     result_data = base64.b64encode(open(f.name, "rb").read())
     try:
-        os.remove(f)
+        os.remove(f.name)
     except:  # noqa E722
         pass
 
@@ -364,6 +297,206 @@ def run_openai_summarization(data_dict):
     )
 
     log(f"OpenAI summarization for {source_id} completed")
+    return rez
+
+
+def extract_flare(analysis_results):
+    """Pull the classifier block out of an analysis's results dict, or None."""
+    if not isinstance(analysis_results, dict):
+        return None
+    cls = analysis_results.get("classification")
+    if not isinstance(cls, dict) or not cls.get("probabilities"):
+        return None
+    return {
+        "classification": cls,
+        "triage": analysis_results.get("triage") or {},
+        "context": analysis_results.get("context") or {},
+    }
+
+
+def build_triage_prompt(prompt, source_id, flare):
+    """Seed the LLM with the classifier's numbers; ask for interpretation, not a
+    restatement. flare is the dict from extract_flare."""
+    cls = flare["classification"]
+    parts = [prompt, "'''", f"Source: {source_id}"]
+    probs = ", ".join(
+        f"{k} {v:.3f}"
+        for k, v in sorted(cls["probabilities"].items(), key=lambda kv: -kv[1])
+    )
+    parts.append(f"Class probabilities: {probs}")
+    parts.append(f"Predicted: {cls.get('predicted')}")
+    if cls.get("prediction_set") is not None:
+        parts.append(
+            f"{int((1 - cls.get('alpha', 0.1)) * 100)}% set: {cls['prediction_set']}"
+        )
+    if cls.get("credibility") is not None:
+        parts.append(f"Credibility: {cls['credibility']}")
+    anomaly = cls.get("anomaly") or {}
+    if anomaly:
+        parts.append(f"Anomaly: {json.dumps(anomaly)}")
+    if flare["context"]:
+        parts.append(f"Host/context: {json.dumps(flare['context'])}")
+    rule = flare["triage"]
+    if rule:
+        parts.append(
+            f"Rule verdict (authoritative): {rule.get('verdict')} priority {rule.get('priority')}"
+        )
+    parts.append("'''")
+    return "\n".join(parts)
+
+
+def parse_triage_response(text):
+    """The LLM is asked for strict JSON; tolerate a fenced or padded object."""
+    keys = ("summary", "evidence", "suggested_action", "caveats")
+    try:
+        obj = json.loads(text)
+    except Exception:  # noqa BLE001 — fall back to the first {...} span
+        start, end = text.find("{"), text.rfind("}")
+        if start == -1 or end <= start:
+            return None
+        try:
+            obj = json.loads(text[start : end + 1])
+        except Exception:  # noqa BLE001
+            return None
+    if not isinstance(obj, dict):
+        return None
+    return {k: obj.get(k) for k in keys if obj.get(k)}
+
+
+def format_triage_comment(parsed, flare):
+    """Render the parsed triage as a source comment; the rule verdict leads."""
+    rule = flare["triage"]
+    lines = ["**FLARE triage**"]
+    if rule.get("verdict"):
+        pr = (
+            f" (priority {rule['priority']})"
+            if rule.get("priority") is not None
+            else ""
+        )
+        lines.append(f"- Verdict: `{rule['verdict']}`{pr}")
+    labels = {
+        "summary": "Summary",
+        "evidence": "Evidence",
+        "suggested_action": "Suggested action",
+        "caveats": "Caveats",
+    }
+    for key, label in labels.items():
+        if parsed.get(key):
+            lines.append(f"- {label}: {parsed[key]}")
+    return "\n".join(lines)
+
+
+def run_triage(data_dict):
+    """Enrich a classifier analysis with an LLM triage and post it as a source
+    comment. The service runs inside the deployment, so it reads the analysis and
+    writes the comment through the models -- no SkyPortal token or URL needed."""
+    import sqlalchemy as sa
+
+    from skyportal.models import Comment, DBSession, Group, ObjAnalysis
+
+    rez = {"status": "failure", "message": "", "analysis": {}}
+    params = data_dict["inputs"].get("analysis_parameters", {}) or {}
+    source_id = data_dict.get("resource_id")
+    if not source_id:
+        rez["message"] = "triage needs a source"
+        return rez
+    triage_cfg = cfg["analysis_services.openai_analysis_service.triage"] or {}
+    openai_key = default_analysis_parameters.get("openai_api_key") or params.get(
+        "openai_api_key"
+    )
+    if not openai_key and not default_analysis_parameters.get("base_url"):
+        rez["message"] = "OpenAI API key not set"
+        return rez
+
+    # 1) the latest completed classification analysis for this source (or a named one)
+    flare = author_id = group_ids = None
+    try:
+        with DBSession() as session:
+            analysis_id = params.get("analysis_id")
+            if analysis_id is not None:
+                rows = [session.get(ObjAnalysis, int(analysis_id))]
+            else:
+                rows = session.scalars(
+                    sa.select(ObjAnalysis)
+                    .where(ObjAnalysis.obj_id == source_id)
+                    .order_by(ObjAnalysis.created_at.desc())
+                ).all()
+            for a in rows:
+                if a is None or a.status != "completed":
+                    continue
+                found = extract_flare(a.serialize_results_data())
+                if found:
+                    flare = found
+                    author_id = a.author_id
+                    group_ids = [g.id for g in a.groups]
+                    break
+    except Exception as e:  # noqa BLE001
+        rez["message"] = f"could not read classification analysis: {e}"
+        return rez
+    finally:
+        DBSession.remove()
+    if not flare:
+        rez["message"] = "no completed classification analysis found for this source"
+        return rez
+
+    # 2) LLM triage, holding no DB connection during the call
+    try:
+        from openai import OpenAI
+
+        client = OpenAI(
+            api_key=openai_key or "none",
+            base_url=default_analysis_parameters.get("base_url") or None,
+        )
+        # The person triggering the run owns the prompt; the config is only the
+        # default when the request does not supply one.
+        prompt = params.get("prompt") or triage_cfg.get("prompt", "")
+        response = client.chat.completions.create(
+            messages=[
+                {"role": "system", "content": "You return only strict JSON."},
+                {
+                    "role": "user",
+                    "content": build_triage_prompt(prompt, source_id, flare),
+                },
+            ],
+            model=default_analysis_parameters["model"],
+            temperature=default_analysis_parameters["temperature"],
+            max_tokens=default_analysis_parameters["max_tokens"],
+        )
+    except Exception as e:  # noqa BLE001
+        rez["message"] = f"LLM triage failed: {e}"
+        return rez
+
+    parsed = parse_triage_response(response.choices[0].message.content or "")
+    if not parsed:
+        rez["message"] = "LLM triage returned no usable JSON"
+        return rez
+
+    # 3) post the verdict as a source comment, attributed to the analysis author
+    try:
+        with DBSession() as session:
+            groups = (
+                session.scalars(sa.select(Group).where(Group.id.in_(group_ids))).all()
+                if group_ids
+                else []
+            )
+            session.add(
+                Comment(
+                    text=format_triage_comment(parsed, flare),
+                    obj_id=source_id,
+                    author_id=author_id,
+                    groups=list(groups),
+                    bot=True,
+                )
+            )
+            session.commit()
+    except Exception as e:  # noqa BLE001
+        rez["message"] = f"could not post triage comment: {e}"
+        return rez
+    finally:
+        DBSession.remove()
+
+    log(f"FLARE triage posted for {source_id}")
+    rez.update({"status": "success", "message": "triage posted as a source comment"})
     return rez
 
 
@@ -424,7 +557,11 @@ class SummarizeHandler(tornado.web.RequestHandler):
             finally:
                 upload_analysis_results(result, data_dict)
 
-        runner = functools.partial(run_openai_summarization, data_dict)
+        # analysis_parameters.task="triage" enriches a classifier analysis and
+        # posts a source comment; the default remains source summarization.
+        task = (data_dict["inputs"].get("analysis_parameters") or {}).get("task")
+        job = run_triage if task == "triage" else run_openai_summarization
+        runner = functools.partial(job, data_dict)
         future_result = IOLoop.current().run_in_executor(None, runner)
         future_result.add_done_callback(openai_analysis_done_callback)
 
