@@ -9,6 +9,7 @@ import InputLabel from "@mui/material/InputLabel";
 import MenuItem from "@mui/material/MenuItem";
 import Select from "@mui/material/Select";
 import TextField from "@mui/material/TextField";
+import Typography from "@mui/material/Typography";
 import { LocalizationProvider } from "@mui/x-date-pickers";
 import { AdapterDateFns } from "@mui/x-date-pickers/AdapterDateFns";
 import { DateTimePicker } from "@mui/x-date-pickers/DateTimePicker";
@@ -307,6 +308,15 @@ const ObservationPlanRequestForm = ({
   instrumentList?.forEach((instrumentObj: any) => {
     instLookUp[instrumentObj.id] = instrumentObj;
   });
+
+  const obsplanFormParams =
+    instrumentObsplanFormParams?.[
+      allocationLookUp[selectedAllocationId]?.instrument_id
+    ];
+  const obsplanFormSchema = obsplanFormParams?.formSchema;
+  const obsplanInstrumentName =
+    instLookUp[allocationLookUp[selectedAllocationId]?.instrument_id]?.name ||
+    "This instrument";
 
   const [selectedProjection, setSelectedProjection] = useState(
     projectionOptions[0],
@@ -807,39 +817,33 @@ const ObservationPlanRequestForm = ({
         />
         <div data-testid="observationplan-request-form">
           <div style={{ marginTop: "1rem" }}>
-            <Form
-              schema={
-                (instrumentObsplanFormParams
-                  ? instrumentObsplanFormParams[
-                      allocationLookUp[selectedAllocationId]?.instrument_id
-                    ]?.formSchema
-                  : {}) as any
-              }
-              formData={selectedFormData}
-              onChange={({ formData }) => setSelectedFormData(formData)}
-              validator={validator}
-              uiSchema={
-                instrumentObsplanFormParams
-                  ? instrumentObsplanFormParams[
-                      allocationLookUp[selectedAllocationId]?.instrument_id
-                    ]?.uiSchema
-                  : {}
-              }
-              templates={{ ObjectFieldTemplate: MyObjectFieldTemplate }}
-              liveValidate
-              customValidate={validate as any}
-              onSubmit={handleQueueSubmit as any}
-              disabled={isSubmitting}
-            >
-              <Button
-                secondary
-                size="small"
-                type="submit"
-                style={{ marginTop: "1rem" }}
+            {obsplanFormSchema ? (
+              <Form
+                schema={obsplanFormSchema as any}
+                formData={selectedFormData}
+                onChange={({ formData }) => setSelectedFormData(formData)}
+                validator={validator}
+                uiSchema={obsplanFormParams?.uiSchema || {}}
+                templates={{ ObjectFieldTemplate: MyObjectFieldTemplate }}
+                liveValidate
+                customValidate={validate as any}
+                onSubmit={handleQueueSubmit as any}
+                disabled={isSubmitting}
               >
-                Add to Queue
-              </Button>
-            </Form>
+                <Button
+                  secondary
+                  size="small"
+                  type="submit"
+                  style={{ marginTop: "1rem" }}
+                >
+                  Add to Queue
+                </Button>
+              </Form>
+            ) : (
+              <Typography variant="body2">
+                {`${obsplanInstrumentName} published no observation plan form, so plans cannot be requested for it here; its API class failed to build one (see the server log).`}
+              </Typography>
+            )}
           </div>
           {isSubmitting && (
             <div className={classes.marginTop}>

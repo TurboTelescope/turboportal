@@ -1,4 +1,9 @@
+import traceback
 from copy import deepcopy
+
+from baselayer.log import make_log
+
+log = make_log("facility_apis")
 
 
 class _ListenerBase:
@@ -93,10 +98,21 @@ class _Base:
     # subclasses should not modify this
     @classmethod
     def frontend_render_info(cls, instrument, user, **kwargs):
-        try:
-            formSchema = cls.custom_json_schema(instrument, user, **kwargs)
-        except AttributeError:
+        # Only a missing method falls back to the static schema. Catching
+        # AttributeError around the call would also swallow one raised inside
+        # it, and hand the frontend a null schema it cannot render.
+        custom_json_schema = getattr(cls, "custom_json_schema", None)
+        if custom_json_schema is None:
             formSchema = cls.form_json_schema
+        else:
+            try:
+                formSchema = custom_json_schema(instrument, user, **kwargs)
+            except Exception:
+                log(
+                    f"{cls.__name__}.custom_json_schema failed for instrument "
+                    f"{instrument.id} ({instrument.name}): {traceback.format_exc()}"
+                )
+                formSchema = cls.form_json_schema
         try:
             priority_order = cls.priority_order
         except AttributeError:
