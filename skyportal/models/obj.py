@@ -277,6 +277,14 @@ class Obj(Base, conesearch_alchemy.Point):
         nullable=True,
         doc="TNS info in JSON format",
     )
+    known_object = sa.Column(
+        JSONB,
+        nullable=True,
+        doc="Catalogue crossmatch identifying this obj as an already-known "
+        "variable star, AGN/quasar or exoplanet host, e.g. "
+        "`{'catalog': 'VSX', 'ident': 'V0533 Her', 'vtype': 'UG', "
+        "'period': 0.147, 'url': 'https://...'}`.",
+    )
     score = sa.Column(sa.Float, nullable=True, doc="Machine learning score.")
 
     origin = sa.Column(sa.String, nullable=True, doc="Origin of the object.")

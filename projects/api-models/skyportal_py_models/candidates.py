@@ -77,6 +77,7 @@ class CandidateResponse(BaseModel):
     mpc_name: str | None = None
     tns_name: str | None = None
     tns_info: dict[str, Any] | None = None
+    known_object: dict[str, Any] | None = None
     score: float | None = None
     origin: str | None = None
     alias: list[str] | None = None
@@ -244,6 +245,7 @@ class CandidatePost(BaseModel):
     mpc_name: str | None = None
     tns_name: str | None = None
     tns_info: dict[str, Any] | None = None
+    known_object: dict[str, Any] | None = None
     score: float | None = None
     origin: str | None = None
     alias: list[str] | None = None

@@ -53,6 +53,7 @@ import EditSourceGroups from "./EditSourceGroups";
 import SimilarSources from "./SimilarSources";
 import SourceAcknowledgment from "./SourceAcknowledgment";
 import SourceAlias from "./SourceAlias";
+import SourceKnownObject from "./SourceKnownObject";
 import UpdateSourceGCNCrossmatch from "./UpdateSourceGCNCrossmatch";
 import UpdateSourceMPC from "./UpdateSourceMPC";
 import UpdateSourceRedshift from "./UpdateSourceRedshift";
@@ -814,6 +815,11 @@ const SourceContent = ({ source }: SourceContentProps) => {
                   <UpdateSourceGCNCrossmatch source={source} />
                 )}
               </div>
+              {source.known_object && (
+                <div className={classes.rowInfo}>
+                  <SourceKnownObject known_object={source.known_object} />
+                </div>
+              )}
               <div className={classes.rowInfo}>
                 <SourceAlias source={source} />
               </div>

@@ -122,6 +122,10 @@ const SurveyLinkList = ({ ra, dec, id }: SurveyLinkListProps) => {
   return (
     <div className={styles.SurveyLinkList}>
       <SurveyLink
+        name="AAVSO VSX"
+        url={`https://vsx.aavso.org/index.php?view=results.get&coords=${ra}+${dec}&format=d&geom=r&size=10&unit=3`}
+      />
+      <SurveyLink
         name="ACROSS"
         url={`https://app.across.sciencecloud.nasa.gov/visibility-calculator?ra=${ra}&dec=${dec}&date_range_begin=${encodeURIComponent(
           acrossBegin,
