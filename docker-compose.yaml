@@ -36,7 +36,9 @@ services:
         condition: service_healthy
 
   db:
-    image: pgvector/pgvector:pg17
+    # trixie, not bookworm: it carries the same glibc the database's
+    # collations were built with, so text indexes stay valid.
+    image: pgvector/pgvector:pg17-trixie
     environment:
       POSTGRES_USER: skyportal
       POSTGRES_PASSWORD: password
