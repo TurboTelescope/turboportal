@@ -239,6 +239,7 @@ from skyportal.handlers.api import (
     TermsOfServiceHandler,
     ThumbnailHandler,
     ThumbnailPathHandler,
+    TurboFrameHandler,
     UnsourcedFinderHandler,
     UserACLHandler,
     UserApplicationHandler,
@@ -681,6 +682,7 @@ skyportal_handlers = [
     (r"/api/telescope(/[0-9]+)?", TelescopeHandler),
     (r"/api/terms_of_service", TermsOfServiceHandler),
     (r"/api/thumbnail(/[0-9]+)?", ThumbnailHandler),
+    (r"/api/turbo/frame", TurboFrameHandler),
     (
         r"/api/sources/([0-9A-Za-z-_\.\+]+)/photometry_cutouts",
         SourcePhotometryCutoutsHandler,

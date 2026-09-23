@@ -24,7 +24,7 @@ from ...models import (
     Spectrum,
 )
 from ...utils.sizeof import SIZE_WARNING_THRESHOLD, sizeof
-from ..base import BaseHandler
+from ..base import BaseHandler, RequestError
 
 AssociatedResourceType = Annotated[
     str,
@@ -40,6 +40,43 @@ ResourceId = Annotated[
 ]
 
 log = make_log("api/annotation")
+
+
+async def annotation_groups(session, user_or_token, group_ids):
+    groups = (
+        await session.scalars(
+            Group.select(user_or_token).where(Group.id.in_(group_ids))
+        )
+    ).all()
+    if {g.id for g in groups} != set(group_ids):
+        raise RequestError(f"Cannot find one or more groups with IDs: {group_ids}.")
+    return list(groups)
+
+
+def obj_annotation(obj_id, origin, data, author_id, groups):
+    schema = Annotation.__schema__(exclude=["author_id"])
+    try:
+        schema.load({"origin": origin, "data": data, "obj_id": obj_id})
+    except ValidationError as e:
+        raise RequestError(
+            f"Invalid/missing parameters: {e.normalized_messages()}"
+        ) from e
+    return Annotation(
+        data=data,
+        obj_id=obj_id,
+        origin=origin,
+        author_id=author_id,
+        groups=groups,
+    )
+
+
+def update_annotation(annotation, data, origin, groups):
+    if data is not None:
+        annotation.data = data
+    if origin is not None:
+        annotation.origin = origin
+    if groups is not None:
+        annotation.groups = groups
 
 
 def _coerce_resource_id(associated_resource_type, resource_id):
@@ -217,32 +254,18 @@ class AnnotationHandler(BaseHandler):
 
         async with self.AsyncSession() as session:
             author_id = self.associated_user_object.id
-            groups_result = await session.scalars(
-                Group.select(self.current_user).where(Group.id.in_(group_ids))
-            )
-            groups = list(groups_result.all())
-            if {g.id for g in groups} != set(group_ids):
-                return self.error(
-                    f"Cannot find one or more groups with IDs: {group_ids}."
-                )
+            try:
+                groups = await annotation_groups(session, self.current_user, group_ids)
+            except RequestError as e:
+                return self.error(str(e))
 
             if associated_resource_type.lower() == "sources":
-                data["obj_id"] = resource_id
-                schema = Annotation.__schema__(exclude=["author_id"])
                 try:
-                    schema.load(data)
-                except ValidationError as e:
-                    return self.error(
-                        f"Invalid/missing parameters: {e.normalized_messages()}"
+                    annotation = obj_annotation(
+                        resource_id, origin, annotation_data, author_id, groups
                     )
-
-                annotation = Annotation(
-                    data=annotation_data,
-                    obj_id=resource_id,
-                    origin=origin,
-                    author_id=author_id,
-                    groups=groups,
-                )
+                except RequestError as e:
+                    return self.error(str(e))
             elif associated_resource_type.lower() == "spectra":
                 try:
                     spectrum_id = int(resource_id)
@@ -385,24 +408,15 @@ class AnnotationHandler(BaseHandler):
                     "Could not find any accessible annotations.", status=403
                 )
 
-            group_ids = body.group_ids
-
-            if body.data is not None:
-                a.data = body.data
-
-            if body.origin is not None:
-                a.origin = body.origin
-
-            if group_ids is not None:
-                groups_result = await session.scalars(
-                    Group.select(self.current_user).where(Group.id.in_(group_ids))
-                )
-                groups = groups_result.all()
-                if {g.id for g in groups} != set(group_ids):
-                    return self.error(
-                        f"Cannot find one or more groups with IDs: {group_ids}."
+            groups = None
+            if body.group_ids is not None:
+                try:
+                    groups = await annotation_groups(
+                        session, self.current_user, body.group_ids
                     )
-                a.groups = list(groups)
+                except RequestError as e:
+                    return self.error(str(e))
+            update_annotation(a, body.data, body.origin, groups)
 
             if str(getattr(a, associated_resource["id_attr"])) != resource_id:
                 return self.error(

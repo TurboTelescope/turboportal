@@ -120,7 +120,7 @@ from ...utils.scout_ephemeris import (
 )
 from ...utils.scout_ingest import ANNOTATION_ORIGIN as SCOUT_ANNOTATION_ORIGIN
 from ...utils.sizeof import SIZE_WARNING_THRESHOLD, sizeof
-from ..base import BaseHandler
+from ..base import BaseHandler, RequestError
 from .candidate.candidate import (
     update_healpix_if_relevant,
     update_redshift_history_if_relevant,
@@ -811,8 +811,10 @@ def create_annotations_query(
     return annotations_query
 
 
-async def post_source_async(data, user_id, session, refresh_source=True):
-    """Async equivalent of ``post_source``. Same behaviour, awaits all DB I/O."""
+async def save_source(data, user_id, session, commit=None):
+    """The save half of ``post_source_async``, up to its commit, which awaits
+    ``commit`` (default ``session.commit``). Returns the obj, the groups it was
+    saved to, the saver per group ID, the saved group IDs and any warnings."""
     warnings = []
 
     user = await session.scalar(sa.select(User).where(User.id == user_id))
@@ -1048,21 +1050,36 @@ async def post_source_async(data, user_id, session, refresh_source=True):
                 )
             )
 
-    await session.commit()
+    await (commit or session.commit)()
 
     groups = [group for group in groups if group.id not in not_saved_to_group_ids]
+    saved_group_ids = list(set(group_ids) - set(not_saved_to_group_ids))
+    return obj, groups, saver_per_group_id, saved_group_ids, warnings
+
+
+async def publish_saved_source(session, obj, groups, saver_per_group_id):
+    """Run the auto-publishing of a committed source save."""
+    publish_to = ["TNS", "Hermes", "Public page"]
+    for group in groups:
+        await auto_source_publishing_async(
+            session=session,
+            saver=saver_per_group_id[group.id],
+            obj=obj,
+            group_id=group.id,
+            publish_to=publish_to,
+        )
+
+
+async def post_source_async(data, user_id, session, refresh_source=True):
+    """Async equivalent of ``post_source``. Same behaviour, awaits all DB I/O."""
+    obj, groups, saver_per_group_id, saved_group_ids, warnings = await save_source(
+        data, user_id, session
+    )
+
     # Skip the per-group publishing checks (two queries each) unless some
     # auto-publishing is actually configured for these groups.
     if await any_group_auto_publishes(session, [group.id for group in groups]):
-        publish_to = ["TNS", "Hermes", "Public page"]
-        for group in groups:
-            await auto_source_publishing_async(
-                session=session,
-                saver=saver_per_group_id[group.id],
-                obj=obj,
-                group_id=group.id,
-                publish_to=publish_to,
-            )
+        await publish_saved_source(session, obj, groups, saver_per_group_id)
 
     if refresh_source:
         flow = Flow()
@@ -1071,7 +1088,59 @@ async def post_source_async(data, user_id, session, refresh_source=True):
         )
         flow.push("*", "skyportal/REFRESH_CANDIDATE", payload={"id": obj.internal_key})
 
-    return obj.id, list(set(group_ids) - set(not_saved_to_group_ids)), warnings
+    return obj.id, saved_group_ids, warnings
+
+
+async def patch_source(data, user, session, commit=None):
+    """Apply a source PATCH to obj ``data["id"]`` and await ``commit`` (default
+    ``session.commit``). Returns the loaded patch and whether the position moved."""
+    obj_id = data["id"]
+    # TURBO: our own pipeline owns these positions and refines them with
+    # every redetection, so a survey that posts its objects as candidates
+    # must still be able to correct them. Absent the flag the upstream
+    # guard below is unchanged.
+    allow_candidate_move = bool(data.pop("allow_candidate_position_update", False))
+
+    updated_coordinates = False
+    if data.get("ra", None) is not None or data.get("dec", None) is not None:
+        existing_candidates_result = await session.scalars(
+            sa.select(Candidate).where(Candidate.obj_id == obj_id)
+        )
+        existing_candidates = existing_candidates_result.all()
+        if len(existing_candidates) > 0 and not allow_candidate_move:
+            raise RequestError(
+                "Cannot update the position of an object with candidates/alerts"
+            )
+
+        source = await session.scalar(sa.select(Obj).where(Obj.id == obj_id))
+        if source is None:
+            raise RequestError(f"Cannot find the object with name {obj_id}")
+
+        if not (
+            np.isclose(data.get("ra", source.ra), source.ra)
+            and np.isclose(data.get("dec", source.dec), source.dec)
+        ):
+            run_async(remove_obj_thumbnails, obj_id)
+            updated_coordinates = True
+
+    schema = Obj.__schema__()
+    try:
+        obj = schema.load(data)
+    except ValidationError as e:
+        raise RequestError(
+            f"Invalid/missing parameters: {e.normalized_messages()}"
+        ) from e
+    update_redshift_history_if_relevant(data, obj, user)
+    update_summary_history_if_relevant(data, obj, user)
+    if "summary" in data:
+        # The stored vector describes the summary it was made from.
+        await session.execute(delete_embedding(obj.id))
+
+    update_healpix_if_relevant(data, obj)
+
+    await session.merge(obj)
+    await (commit or session.commit)()
+    return obj, updated_coordinates
 
 
 def post_source(data, user_id, session, refresh_source=True):
@@ -1795,52 +1864,14 @@ class SourceHandler(BaseHandler):
         body = self.parse_body(SourcePatchBody)
         data = body.model_dump(exclude_unset=True)
         data["id"] = obj_id
-        # TURBO: our own pipeline owns these positions and refines them with
-        # every redetection, so a survey that posts its objects as candidates
-        # must still be able to correct them. Absent the flag the upstream
-        # guard below is unchanged.
-        allow_candidate_move = bool(data.pop("allow_candidate_position_update", False))
 
         async with self.AsyncSession() as session:
-            updated_coordinates = False
-            if data.get("ra", None) is not None or data.get("dec", None) is not None:
-                existing_candidates_result = await session.scalars(
-                    sa.select(Candidate).where(Candidate.obj_id == obj_id)
-                )
-                existing_candidates = existing_candidates_result.all()
-                if len(existing_candidates) > 0 and not allow_candidate_move:
-                    return self.error(
-                        "Cannot update the position of an object with candidates/alerts"
-                    )
-
-                source = await session.scalar(sa.select(Obj).where(Obj.id == obj_id))
-                if source is None:
-                    return self.error(f"Cannot find the object with name {obj_id}")
-
-                if not (
-                    np.isclose(data.get("ra", source.ra), source.ra)
-                    and np.isclose(data.get("dec", source.dec), source.dec)
-                ):
-                    run_async(remove_obj_thumbnails, obj_id)
-                    updated_coordinates = True
-
-            schema = Obj.__schema__()
             try:
-                obj = schema.load(data)
-            except ValidationError as e:
-                return self.error(
-                    f"Invalid/missing parameters: {e.normalized_messages()}"
+                obj, updated_coordinates = await patch_source(
+                    data, self.associated_user_object, session
                 )
-            update_redshift_history_if_relevant(data, obj, self.associated_user_object)
-            update_summary_history_if_relevant(data, obj, self.associated_user_object)
-            if "summary" in data:
-                # The stored vector describes the summary it was made from.
-                await session.execute(delete_embedding(obj.id))
-
-            update_healpix_if_relevant(data, obj)
-
-            await session.merge(obj)
-            await session.commit()
+            except RequestError as e:
+                return self.error(str(e))
 
             self.push_all(
                 action="skyportal/REFRESH_SOURCE",

@@ -44,6 +44,11 @@ def format_doc(**kwargs):
     return wrap
 
 
+class RequestError(Exception):
+    """Raised by logic shared between handlers for what a handler reports as
+    ``self.error(str(e))``."""
+
+
 class BaseHandler(BaselayerHandler):
     terms_of_service_exempt = ()
 

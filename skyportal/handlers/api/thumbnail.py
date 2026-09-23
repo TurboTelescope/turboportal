@@ -39,7 +39,7 @@ async def _clear_cutout_request(session, photometry_id):
     )
 
 
-async def post_thumbnail(data, user_id, session):
+async def post_thumbnail(data, user_id, session, commit=None):
     """Post thumbnail to database (async).
     data: dict
         Thumbnail dictionary
@@ -47,6 +47,8 @@ async def post_thumbnail(data, user_id, session):
         SkyPortal ID of User posting the Thumbnail
     session: sqlalchemy.ext.asyncio.AsyncSession
         Async DB session for this transaction
+    commit : coroutine function, optional
+        Awaited in place of ``session.commit``
     """
 
     obj_id, ttype = data["obj_id"], data["ttype"]
@@ -100,7 +102,7 @@ async def post_thumbnail(data, user_id, session):
         )
         if existing_id is not None:
             await _clear_cutout_request(session, phot_id)
-            await session.commit()
+            await (commit or session.commit)()
             return existing_id
 
     try:
@@ -119,7 +121,7 @@ async def post_thumbnail(data, user_id, session):
             await _clear_cutout_request(session, phot_id)
             await session.flush()
             thumbnail_id = t.id
-            await session.commit()
+            await (commit or session.commit)()
             return thumbnail_id
 
         # before_insert-only event listener doesn't fire on the upsert path below.
@@ -195,7 +197,7 @@ async def post_thumbnail(data, user_id, session):
             await session.flush()
             thumbnail_id = t.id
 
-        await session.commit()
+        await (commit or session.commit)()
 
     except StatementError as e:
         if "enum" in str(e):

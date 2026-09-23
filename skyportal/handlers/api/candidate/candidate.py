@@ -63,7 +63,7 @@ from ....utils.data_access import (
 )
 from ....utils.parse import get_page_and_n_per_page, parse_optional_date
 from ....utils.sizeof import SIZE_WARNING_THRESHOLD, sizeof
-from ...base import BaseHandler
+from ...base import BaseHandler, RequestError
 from .candidate_filter import get_subquery_for_saved_status
 
 MAX_NUM_DAYS_USING_LOCALIZATION = 31 * 12 * 10  # 10 years
@@ -348,6 +348,123 @@ def crossmatch_value_clause(origin, key, comparison):
         )
         .exists()
     )
+
+
+async def post_candidate(data, user, session, commit=None, obj=None, filters=None):
+    """Add ``data["id"]``'s candidates (one per filter), creating the Obj if it
+    is new, and return the obj and candidates.
+
+    ``commit`` (default ``session.commit``) is awaited where the endpoint
+    commits. A caller that has already loaded the obj or the filters passes
+    them in.
+    """
+    if obj is None:
+        obj = await session.scalar(
+            Obj.select(session.user_or_token).where(Obj.id == data["id"])
+        )
+    obj_already_exists = obj is not None
+    schema = Obj.__schema__()
+
+    if data.get("ra") is None and not obj_already_exists:
+        raise RequestError("RA must not be null for a new Obj")
+
+    if data.get("dec") is None and not obj_already_exists:
+        raise RequestError("Dec must not be null for a new Obj")
+
+    passing_alert_id = data.pop("passing_alert_id", None)
+    passed_at = data.pop("passed_at")
+    try:
+        passed_at = arrow.get(passed_at).datetime
+    except Exception as e:
+        raise RequestError(f"Invalid passedAt value: {e}") from e
+    filter_ids = data.pop("filter_ids")
+
+    if not obj_already_exists:
+        try:
+            obj = schema.load(data)
+        except ValidationError as e:
+            raise RequestError(
+                f"Invalid/missing parameters: {e.normalized_messages()}"
+            ) from e
+        # Set derived columns while obj is transient so they go into the
+        # INSERT; reading them after the flush can sync-lazy-load an
+        # expired attribute and raise MissingGreenlet.
+        update_redshift_history_if_relevant(data, obj, user)
+        update_healpix_if_relevant(data, obj)
+        try:
+            # Concurrent posts of the same new obj race here: the loser
+            # rolls back to the savepoint and reuses the committed row.
+            async with session.begin_nested():
+                session.add(obj)
+                await session.flush()
+        except IntegrityError:
+            obj = await session.scalar(
+                Obj.select(session.user_or_token).where(Obj.id == data["id"])
+            )
+            if obj is None:
+                raise RequestError(
+                    f"Failed to create object {data['id']}: it already exists but is not accessible"
+                )
+            obj_already_exists = True
+
+    if filters is None:
+        filters_result = await session.scalars(
+            Filter.select(session.user_or_token).where(Filter.id.in_(filter_ids))
+        )
+        filters = filters_result.unique().all()
+    if not filters:
+        raise RequestError("At least one valid filter ID must be provided.")
+
+    # Existing obj (found up front, or created concurrently): it is fully
+    # loaded, so applying the updates here can't lazy-load.
+    if obj_already_exists:
+        update_redshift_history_if_relevant(data, obj, user)
+        update_healpix_if_relevant(data, obj)
+
+    # Capture obj.id BEFORE the commit attempt so that we can still
+    # build an error message after a rollback (which detaches obj).
+    obj_id_str = obj.id
+
+    # Re-posting an existing candidate (same obj/filter/passed_at) is
+    # idempotent: reuse the committed row instead of 400-ing on the unique
+    # index. Per-filter savepoints so one duplicate doesn't roll back the
+    # genuinely-new candidates in the same request.
+    candidates = []
+    for filter in filters:
+        candidate = Candidate(
+            obj_id=obj_id_str,
+            filter_id=filter.id,
+            passing_alert_id=passing_alert_id,
+            passed_at=passed_at,
+            uploader_id=user.id,
+        )
+        try:
+            async with session.begin_nested():
+                session.add(candidate)
+                await session.flush()
+            candidates.append(candidate)
+        except IntegrityError as e:
+            # Only the (obj/filter/passed_at) unique index is idempotent;
+            # surface any other integrity failure instead of silently
+            # dropping the candidate and returning a false success.
+            if "candidates_main_index" not in str(e.orig):
+                raise RequestError(
+                    f"Failed to post candidate for object {obj_id_str}: {e.args[0]}"
+                ) from e
+            existing = await session.scalar(
+                Candidate.select(session.user_or_token).where(
+                    Candidate.obj_id == obj_id_str,
+                    Candidate.filter_id == filter.id,
+                    Candidate.passed_at == passed_at,
+                )
+            )
+            if existing is None:
+                raise RequestError(
+                    f"Candidate for object {obj_id_str} already exists but is not accessible"
+                )
+            candidates.append(existing)
+    await (commit or session.commit)()
+    return obj, candidates
 
 
 class CandidateHandler(BaseHandler):
@@ -1361,115 +1478,12 @@ class CandidateHandler(BaseHandler):
         data = body.model_dump(exclude_unset=True)
 
         async with self.AsyncSession() as session:
-            obj = await session.scalar(
-                Obj.select(session.user_or_token).where(Obj.id == data["id"])
-            )
-            obj_already_exists = obj is not None
-            schema = Obj.__schema__()
-
-            if data.get("ra") is None and not obj_already_exists:
-                return self.error("RA must not be null for a new Obj")
-
-            if data.get("dec") is None and not obj_already_exists:
-                return self.error("Dec must not be null for a new Obj")
-
-            passing_alert_id = data.pop("passing_alert_id", None)
-            passed_at = data.pop("passed_at")
             try:
-                passed_at = arrow.get(passed_at).datetime
-            except Exception as e:
-                return self.error(f"Invalid passedAt value: {e}")
-            filter_ids = data.pop("filter_ids")
-
-            if not obj_already_exists:
-                try:
-                    obj = schema.load(data)
-                except ValidationError as e:
-                    return self.error(
-                        f"Invalid/missing parameters: {e.normalized_messages()}"
-                    )
-                # Set derived columns while obj is transient so they go into the
-                # INSERT; reading them after the flush can sync-lazy-load an
-                # expired attribute and raise MissingGreenlet.
-                update_redshift_history_if_relevant(
-                    data, obj, self.associated_user_object
+                _, candidates = await post_candidate(
+                    data, self.associated_user_object, session
                 )
-                update_healpix_if_relevant(data, obj)
-                try:
-                    # Concurrent posts of the same new obj race here: the loser
-                    # rolls back to the savepoint and reuses the committed row.
-                    async with session.begin_nested():
-                        session.add(obj)
-                        await session.flush()
-                except IntegrityError:
-                    obj = await session.scalar(
-                        Obj.select(session.user_or_token).where(Obj.id == data["id"])
-                    )
-                    if obj is None:
-                        return self.error(
-                            f"Failed to create object {data['id']}: it already exists but is not accessible"
-                        )
-                    obj_already_exists = True
-
-            filters_result = await session.scalars(
-                Filter.select(session.user_or_token).where(Filter.id.in_(filter_ids))
-            )
-            filters = filters_result.unique().all()
-            if not filters:
-                return self.error("At least one valid filter ID must be provided.")
-
-            # Existing obj (found up front, or created concurrently): it is fully
-            # loaded, so applying the updates here can't lazy-load.
-            if obj_already_exists:
-                update_redshift_history_if_relevant(
-                    data, obj, self.associated_user_object
-                )
-                update_healpix_if_relevant(data, obj)
-
-            # Capture obj.id BEFORE the commit attempt so that we can still
-            # build an error message after a rollback (which detaches obj).
-            obj_id_str = obj.id
-
-            # Re-posting an existing candidate (same obj/filter/passed_at) is
-            # idempotent: reuse the committed row instead of 400-ing on the unique
-            # index. Per-filter savepoints so one duplicate doesn't roll back the
-            # genuinely-new candidates in the same request.
-            candidates = []
-            for filter in filters:
-                candidate = Candidate(
-                    obj_id=obj_id_str,
-                    filter_id=filter.id,
-                    passing_alert_id=passing_alert_id,
-                    passed_at=passed_at,
-                    uploader_id=self.associated_user_object.id,
-                )
-                try:
-                    async with session.begin_nested():
-                        session.add(candidate)
-                        await session.flush()
-                    candidates.append(candidate)
-                except IntegrityError as e:
-                    # Only the (obj/filter/passed_at) unique index is idempotent;
-                    # surface any other integrity failure instead of silently
-                    # dropping the candidate and returning a false success.
-                    if "candidates_main_index" not in str(e.orig):
-                        await session.rollback()
-                        return self.error(
-                            f"Failed to post candidate for object {obj_id_str}: {e.args[0]}"
-                        )
-                    existing = await session.scalar(
-                        Candidate.select(session.user_or_token).where(
-                            Candidate.obj_id == obj_id_str,
-                            Candidate.filter_id == filter.id,
-                            Candidate.passed_at == passed_at,
-                        )
-                    )
-                    if existing is None:
-                        return self.error(
-                            f"Candidate for object {obj_id_str} already exists but is not accessible"
-                        )
-                    candidates.append(existing)
-            await session.commit()
+            except RequestError as e:
+                return self.error(str(e))
             ids = [c.id for c in candidates]
 
             return self.success(data={"ids": ids})

@@ -1261,6 +1261,7 @@ async def insert_new_photometry_data(
     validate=True,
     refresh=False,
     duplicates=None,
+    commit=None,
 ):
     # validate=True ⇒ ON CONFLICT DO NOTHING + raise if any row conflicted
     # (preserves the user-visible "duplicates already exist" error path).
@@ -1488,7 +1489,7 @@ async def insert_new_photometry_data(
             phot_stat_by_obj[obj_id].full_update(phot_by_obj.get(obj_id, []))
         for p in all_phot:
             session.expunge(p)
-    await session.commit()
+    await (commit or session.commit)()
 
     if refresh:
         flow = Flow()
