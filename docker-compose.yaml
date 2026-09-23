@@ -39,9 +39,6 @@ services:
     # trixie, not bookworm: it carries the same glibc the database's
     # collations were built with, so text indexes stay valid.
     image: pgvector/pgvector:pg17-trixie
-    # ~18 app and service processes each keep a pool of 5, which alone
-    # nearly filled the default 100; a leaked transaction is closed rather
-    # than holding a slot (and vacuum) indefinitely.
     command:
       - postgres
       - -c
