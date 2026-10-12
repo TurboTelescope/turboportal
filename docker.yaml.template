@@ -126,6 +126,8 @@ app:
       component: source/Source
     - path: "/favorites"
       component: listing/FavoritesPage
+    - path: "/turbo_star"
+      component: turbo/TurboStarRequestPage
     - path: "/groups"
       component: group/Groups
     - path: "/group/:id"
@@ -234,6 +236,10 @@ app:
         - name: Candidates
           icon: Search
           url: /candidates
+
+        - name: TURBO Star
+          icon: AddLocationAlt
+          url: /turbo_star
 
         - name: Favorites
           icon: Star

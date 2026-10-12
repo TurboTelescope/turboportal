@@ -117,8 +117,8 @@ from .gcn import (
     LocalizationTagsHandler,
     ObjGcnEventHandler,
 )
-from .gcn_association_rule import GcnAssociationRuleHandler  # noqa: F401
-from .gcn_crossmatch import GcnEventCrossmatchHandler  # noqa: F401
+from .gcn_association_rule import GcnAssociationRuleHandler
+from .gcn_crossmatch import GcnEventCrossmatchHandler
 from .gcn_event_obj import (
     GcnEventObjHandler,
     GCNsAssociatedWithSourceHandler,
@@ -205,7 +205,7 @@ from .public_pages.public_source_page import PublicSourcePageHandler
 from .recurring_api import RecurringAPIHandler
 from .reminder import ReminderHandler
 from .roles import RoleHandler, UserRoleHandler
-from .scout import ScoutEphemerisHandler  # noqa: F401
+from .scout import ScoutEphemerisHandler
 from .sharing import SharingHandler
 from .sharing_service.sharing_service import SharingServiceHandler
 from .sharing_service.sharing_service_coauthor import (
@@ -263,6 +263,7 @@ from .terms_of_service import TermsOfServiceHandler
 from .thumbnail import ThumbnailHandler, ThumbnailPathHandler
 from .tns.obj_tns import ObjTNSHandler
 from .turbo_frame import TurboFrameHandler
+from .turbo_source_request import TurboSourceRequestHandler
 from .unsourced_finder import UnsourcedFinderHandler
 from .user import (
     UserHandler,

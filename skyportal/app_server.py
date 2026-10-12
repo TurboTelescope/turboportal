@@ -240,6 +240,7 @@ from skyportal.handlers.api import (
     ThumbnailHandler,
     ThumbnailPathHandler,
     TurboFrameHandler,
+    TurboSourceRequestHandler,
     UnsourcedFinderHandler,
     UserACLHandler,
     UserApplicationHandler,
@@ -683,6 +684,7 @@ skyportal_handlers = [
     (r"/api/terms_of_service", TermsOfServiceHandler),
     (r"/api/thumbnail(/[0-9]+)?", ThumbnailHandler),
     (r"/api/turbo/frame", TurboFrameHandler),
+    (r"/api/turbo/source_requests(/[0-9]+)?", TurboSourceRequestHandler),
     (
         r"/api/sources/([0-9A-Za-z-_\.\+]+)/photometry_cutouts",
         SourcePhotometryCutoutsHandler,

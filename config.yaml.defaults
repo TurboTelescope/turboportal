@@ -252,6 +252,8 @@ app:
       anonymous_ok: true
     - path: "/favorites"
       component: listing/FavoritesPage
+    - path: "/turbo_star"
+      component: turbo/TurboStarRequestPage
     - path: "/data_access_requests"
       component: DataAccessRequestsPage
     - path: "/groups"
@@ -387,6 +389,10 @@ app:
         - name: Candidates
           icon: Search
           url: /candidates
+
+        - name: TURBO Star
+          icon: AddLocationAlt
+          url: /turbo_star
 
         - name: Brokers
           icon: Hub

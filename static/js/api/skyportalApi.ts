@@ -235,6 +235,7 @@ export const TAG_TYPES = [
   "UserManagement",
   "DataAvailability",
   "DataAccessRequest",
+  "TurboSourceRequests",
 ] as const;
 
 export const skyportalApi = createApi({
