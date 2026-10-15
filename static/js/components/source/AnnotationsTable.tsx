@@ -272,9 +272,9 @@ const AnnotationsTable = ({
           rows={tableData}
           getRowId={(row: any) => row.__rowid}
           initialState={{
-            pagination: { paginationModel: { pageSize: 10 } },
+            pagination: { paginationModel: { pageSize: 50 } },
           }}
-          pageSizeOptions={[10, 15, 50]}
+          pageSizeOptions={[10, 15, 50, 100]}
           slots={{ toolbar: CustomToolbar }}
           showToolbar
         />
