@@ -223,6 +223,13 @@ const QuickSearchBar = () => {
                   )}`;
                 }
               }
+              const aliases = matchingEntries[key]?.alias || [];
+              if (aliases.length > 0) {
+                name = `${name} [${aliases.join(", ")}]`;
+                aliases.forEach((a) => {
+                  match_name = `${match_name} ${a} ${a.replace(/\s/g, "")}`;
+                });
+              }
               return {
                 id: matchingEntries[key].id,
                 name,

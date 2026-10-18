@@ -1006,9 +1006,19 @@ async def get_sources(
                     )
                 else:
                     tns_name = None
+                # common names (T CrB, SS Cyg) live in the alias list;
+                # matched case- and space-insensitively
+                query_params.append(
+                    bindparam(
+                        "alias_name",
+                        value=sourceID.lower().replace(" ", ""),
+                        type_=sa.String,
+                    )
+                )
                 statements.append(
                     f"""
-                        (objs.id LIKE '%' || :sourceID || '%'{" OR objs.tns_name LIKE '%' || :tns_name || '%'" if tns_name is not None else ""})
+                        (objs.id LIKE '%' || :sourceID || '%'{" OR objs.tns_name LIKE '%' || :tns_name || '%'" if tns_name is not None else ""}
+                         OR EXISTS (SELECT 1 FROM unnest(objs.alias) AS a WHERE replace(lower(a), ' ', '') LIKE '%' || :alias_name || '%'))
                         """
                 )
             except Exception as e:
@@ -1032,11 +1042,15 @@ async def get_sources(
             if alias in ["", None]:
                 raise ValueError(f"Invalid alias: {alias}")
             query_params.append(
-                bindparam("alias", value=str(alias).strip().lower(), type_=sa.String)
+                bindparam(
+                    "alias",
+                    value=str(alias).strip().lower().replace(" ", ""),
+                    type_=sa.String,
+                )
             )
             statements.append(
                 """
-                (lower(objs.alias) LIKE '%' || :alias || '%')
+                EXISTS (SELECT 1 FROM unnest(objs.alias) AS a WHERE replace(lower(a), ' ', '') LIKE '%' || :alias || '%')
                 """
             )
         if origin not in [None, ""]:
