@@ -82,6 +82,7 @@ import { getValidationStatus } from "../photometry/PhotometryValidation";
 import { SsoPoint } from "./ssoTransforms";
 import ScatterPlotIcon from "@mui/icons-material/ScatterPlot";
 import CornerPlot from "./CornerPlot";
+import { isForcedPhotometry } from "./forcedPhotometry";
 
 // Dash styles cycled across overlaid model fits, with a glyph hint for the
 // toggle buttons so the button matches its line on the plot.
@@ -1252,11 +1253,11 @@ const PhotometryPlot = ({
 
           const detectionisFP =
             detections?.length > 0 &&
-            ["fp", "alert_fp", "TURBO_forced"].includes(detections[0].origin);
+            isForcedPhotometry(detections[0].origin);
 
           const upperLimitisFP =
             upperLimits?.length > 0 &&
-            ["fp", "alert_fp", "TURBO_forced"].includes(upperLimits[0].origin);
+            isForcedPhotometry(upperLimits[0].origin);
 
           const upperLimitsTrace: any = {
             dataType: "upperLimits",

@@ -5,6 +5,7 @@ import Switch from "@mui/material/Switch";
 
 import { useGetSourcePhotometryMinimalQuery } from "../../ducks/photometry_minimal";
 import { useGetConfigQuery } from "../../ducks/config";
+import { isForcedPhotometry } from "./forcedPhotometry";
 
 const VegaPlot = React.lazy(() => import("./VegaPlot"));
 const VegaFoldedPlot = React.lazy(() => import("./VegaFoldedPlot"));
@@ -121,7 +122,7 @@ const VegaPhotometry = (props: VegaPhotometryProps) => {
       if (!showUpperLimits && datum.mag === null) {
         return false;
       }
-      if (!showForcedPhotometry && ["fp", "alert_fp", "TURBO_forced"].includes(datum.origin)) {
+      if (!showForcedPhotometry && isForcedPhotometry(datum.origin)) {
         return false;
       }
       if (!showMatches && datum.obj_id !== sourceId) {
@@ -169,7 +170,7 @@ const VegaPhotometry = (props: VegaPhotometryProps) => {
       setWavelengths(newWavelengths);
       setHasForcedPhotometry(
         photometry.some((datum: any) =>
-          ["fp", "alert_fp", "TURBO_forced"].includes(datum.origin),
+          isForcedPhotometry(datum.origin),
         ),
       );
       setHasMatches(photometry.some((datum: any) => datum.obj_id !== sourceId));

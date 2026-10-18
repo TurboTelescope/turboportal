@@ -20,6 +20,7 @@ import CentroidPlotPlugins, {
   getCrossMatchesTraces,
 } from "./CentroidPlotPlugins";
 import { useGetConfigQuery } from "../../ducks/config";
+import { isForcedPhotometry } from "./forcedPhotometry";
 
 const Plot: any = createPlotlyComponent(Plotly);
 
@@ -173,7 +174,7 @@ const prepareData = (
       !Number.isNaN(p.magerr) &&
       !Number.isNaN(p.ra) &&
       !Number.isNaN(p.dec) &&
-      !["fp", "alert_fp", "TURBO_forced"].includes(p.origin),
+      !isForcedPhotometry(p.origin),
   );
   if (points.length === 0) {
     return {
