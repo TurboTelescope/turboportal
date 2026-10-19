@@ -226,7 +226,7 @@ const QuickSearchBar = () => {
               const aliases = matchingEntries[key]?.alias || [];
               if (aliases.length > 0) {
                 name = `${name} [${aliases.join(", ")}]`;
-                aliases.forEach((a) => {
+                aliases.forEach((a: string) => {
                   match_name = `${match_name} ${a} ${a.replace(/\s/g, "")}`;
                 });
               }
