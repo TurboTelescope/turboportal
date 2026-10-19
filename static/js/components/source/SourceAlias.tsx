@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import AddIcon from "@mui/icons-material/Add";
 import IconButton from "@mui/material/IconButton";
 import Dialog from "@mui/material/Dialog";
@@ -42,6 +43,25 @@ const useStyles = makeStyles()(() => ({
     margin: "1rem",
   },
 }));
+
+// Our own TURBO and STELLAR ids are sources here; ZTF ids open in ALeRCE.
+const aliasLabel = (alias: string) => {
+  if (/^(TURBO|STELLAR)\d{2}[a-z]{7}$/.test(alias)) {
+    return <Link to={`/source/${alias}`}>{alias}</Link>;
+  }
+  if (/^ZTF\d{2}[a-z]{7}$/.test(alias)) {
+    return (
+      <a
+        href={`https://alerce.online/object/${alias}`}
+        target="_blank"
+        rel="noopener noreferrer"
+      >
+        {alias}
+      </a>
+    );
+  }
+  return alias;
+};
 
 interface SourceAliasProps {
   source: {
@@ -115,7 +135,7 @@ const SourceAlias = ({ source }: SourceAliasProps) => {
           <Chip
             key={`${a}-${idx}`}
             className={classes.chip}
-            label={a}
+            label={aliasLabel(a)}
             size="small"
             variant="outlined"
             onDelete={() => handleDelete(a)}
