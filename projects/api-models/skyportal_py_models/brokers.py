@@ -46,7 +46,8 @@ class BrokerResponse(BaseModel):
     ``broker_to_dict`` hand-builds this payload rather than calling
     ``to_dict()``, so ``created_at``/``modified`` are never returned even though
     the row carries them. ``altdata`` is only present for system admins, with
-    the provider's secret config fields stripped out.
+    the provider's secret config fields stripped out and reported by path in
+    ``secrets_set``.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -68,6 +69,7 @@ class BrokerResponse(BaseModel):
         | None
     ) = None
     active: bool | None = None
+    ingest: bool | None = None
     default_alert_search: bool | None = None
     default_crossmatch: bool | None = None
     default_photometry: bool | None = None
@@ -76,6 +78,7 @@ class BrokerResponse(BaseModel):
     filter_kind: BrokerFilterKind | None = None
     # Free-form per-instance provider configuration (endpoints, credentials).
     altdata: dict[str, Any] | None = None
+    secrets_set: list[str] = Field(default_factory=list)
 
 
 class BrokerPostResponse(BaseModel):
@@ -169,6 +172,7 @@ class BrokerFilterResponse(BaseModel):
     broker_id: int | None = None
     autosave: bool | None = None
     altdata: dict[str, Any] | None = None
+    active: bool | None = None
 
 
 class BrokerFilterDetailResponse(BaseModel):
@@ -247,6 +251,7 @@ class BrokerPost(BaseModel):
     broker_classname: BrokerClassname
     altdata: dict[str, Any] | None = None
     active: bool | None = None
+    ingest: bool | None = None
     default_alert_search: bool | None = None
     default_crossmatch: bool | None = None
     default_photometry: bool | None = None
@@ -288,6 +293,10 @@ class BrokerPostBody(BaseModel):
     active: bool = Field(
         default=True, description="Whether the broker connection is active."
     )
+    ingest: bool = Field(
+        default=False,
+        description="Have the ingestion service consume this broker's stream.",
+    )
     default_alert_search: bool = Field(
         default=False,
         description="Make this the broker the source page searches alerts on.",
@@ -309,6 +318,10 @@ class BrokerPatchBody(BaseModel):
     name: str | None = Field(default=None, description="Name of the broker connection.")
     active: bool | None = Field(
         default=None, description="Whether the broker connection is active."
+    )
+    ingest: bool | None = Field(
+        default=None,
+        description="Have the ingestion service consume this broker's stream.",
     )
     altdata: dict[str, Any] | None = Field(
         default=None, description="Endpoints/credentials for this broker instance."
@@ -421,6 +434,16 @@ class BrokerFiltersPostBody(BaseModel):
         default=None,
         description="Whether candidates passing the filter are auto-saved as sources.",
     )
+    comment: str | None = Field(
+        default=None,
+        description="Why this version was made, shown in the filter's version history.",
+    )
+    set_as_active: bool = Field(
+        default=False,
+        description="Make the new version the active one. On an active filter, "
+        "the switch happens once that version passes validation, and the "
+        "current version keeps running until then.",
+    )
 
 
 class BrokerFiltersPatchBody(BaseModel):
@@ -433,6 +456,16 @@ class BrokerFiltersPatchBody(BaseModel):
     )
     active_fid: int | str | None = Field(
         default=None, description="Filter version id (fid) to activate."
+    )
+    previous_active_fid: int | str | None = Field(
+        default=None,
+        description="Active version before this change, as the client last saw "
+        "it. Read from the broker when omitted.",
+    )
+    previous_active: bool | None = Field(
+        default=None,
+        description="Whether the filter was active before this change, as the "
+        "client last saw it. Read from the broker when omitted.",
     )
     autoAnnotate: bool | None = Field(
         default=None, description="Whether to auto-annotate on filter passage."
@@ -465,6 +498,14 @@ class BrokerFiltersPatchBody(BaseModel):
         default=None,
         description="DefaultFollowupRequest the filter's auto-followup uses. "
         "Null or empty string clears it.",
+    )
+    fid: str | None = Field(
+        default=None, description="Filter version (fid) that `comment` applies to."
+    )
+    comment: str | None = Field(
+        default=None,
+        description="Comment on version `fid`, shown in the filter's version "
+        "history. Null or empty string clears it.",
     )
 
 
@@ -568,6 +609,17 @@ class BrokerFilterCatalogGetQuery(BaseModel):
     brokerID: str | None = Field(
         default=None,
         description='A broker id, or "none" for filters attached to no broker.',
+    )
+    sortBy: Literal["name", "active"] = Field(
+        default="name",
+        description=(
+            "Field to sort by. Options are 'name' (default) or 'active' (the "
+            "broker-side state, filters the broker can't report last)."
+        ),
+    )
+    sortOrder: Literal["asc", "desc"] = Field(
+        default="asc",
+        description="Sort order - 'asc' for ascending (default) or 'desc' for descending.",
     )
 
 

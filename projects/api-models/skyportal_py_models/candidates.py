@@ -327,6 +327,14 @@ class CandidateGetQuery(BaseModel):
             "Must be one of the enumerated values."
         ),
     )
+    savedGroupIDs: str | None = Field(
+        default=None,
+        description=(
+            'Comma-separated string of group IDs (e.g. "1,2") that the "Selected" '
+            "saved statuses check against. Defaults to the groups of the "
+            "candidates' filters."
+        ),
+    )
     startDate: str | None = Field(
         default=None,
         description=(
@@ -387,6 +395,26 @@ class CandidateGetQuery(BaseModel):
         ),
         ge=0,
         le=1,
+    )
+    maxCredibleLevel: float | None = Field(
+        default=None,
+        description=(
+            "Keep only candidates at or inside this credible level of the event's "
+            "localization, so 0.9 keeps the 90 percent region. A candidate near 1 "
+            "sits in the tail, which for a wide localization can be tens of "
+            "degrees from the event."
+        ),
+        ge=0,
+        le=1,
+    )
+    minDistpsnr: float | None = Field(
+        default=None,
+        description=(
+            "Keep only candidates at least this many arcseconds from the nearest "
+            "PS1 source, to drop those sitting on a catalogued object. A "
+            "candidate with no PS1 match at all is kept."
+        ),
+        ge=0,
     )
     minNdethist: float | None = Field(
         default=None,

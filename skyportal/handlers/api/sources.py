@@ -1,4 +1,5 @@
 import hashlib
+import json
 import re
 import time
 
@@ -327,7 +328,9 @@ def get_period_exists(annotations):
 _NUMERIC_RE = r"^-?[0-9]+\.?[0-9]*([eE][-+]?[0-9]+)?$"
 
 
-def _nested_annotation_clause(param_index, condition, localization_dateobs, params):
+def _nested_annotation_clause(
+    param_index, condition, localization_dateobs, params, key=None
+):
     """A test applied to each sub-object of an annotation's data.
 
     Annotations that hold one entry per related thing (a GCN crossmatch keyed by
@@ -335,6 +338,13 @@ def _nested_annotation_clause(param_index, condition, localization_dateobs, para
     `value`, the sub-object. When an event is named, only the entry carrying that
     `dateobs` is considered; the two are compared as timestamps so a difference
     in formatting does not silently match nothing.
+
+    `key` is the field `condition` reads. Given one, the sub-objects are only
+    expanded for rows a jsonpath says could carry it, which is what makes this
+    affordable over the whole table: expanding every annotation's data costs far
+    more than the test applied to the result. The jsonpath is the looser
+    question -- lax mode also unwraps arrays -- so it can only skip rows that
+    could not have matched.
     """
     scope = ""
     if localization_dateobs is not None:
@@ -350,11 +360,26 @@ def _nested_annotation_clause(param_index, condition, localization_dateobs, para
             " AND (value ->> 'dateobs')::timestamp"
             f" = (:annotations_filter_dateobs_{param_index})::timestamp"
         )
-    return f"""EXISTS (
+    guard = ""
+    if key is not None:
+        # json.dumps quotes and escapes the key, so one carrying a quote cannot
+        # change the shape of the path.
+        params.append(
+            bindparam(
+                f"annotations_filter_jsonpath_{param_index}",
+                value=f"$.*.{json.dumps(key)}",
+                type_=sa.String,
+            )
+        )
+        guard = (
+            "annotations.data @? "
+            f"CAST(:annotations_filter_jsonpath_{param_index} AS jsonpath) AND "
+        )
+    return f"""({guard}EXISTS (
         SELECT 1 FROM jsonb_each(annotations.data) AS entry(key, value)
         WHERE jsonb_typeof(value) = 'object'
           AND ({condition}){scope}
-    )"""
+    ))"""
 
 
 PROMPT_EXEMPT_ANNOTATIONS = ("ndethist",)
@@ -382,7 +407,9 @@ def _delta_t_clause(
         f"(value ->> 'delta_t') ~ '{_NUMERIC_RE}'"
         f" AND abs((value ->> 'delta_t')::float) <= :{param}"
     )
-    nested = _nested_annotation_clause(prefix, condition, localization_dateobs, params)
+    nested = _nested_annotation_clause(
+        prefix, condition, localization_dateobs, params, key="delta_t"
+    )
     origin_clause = ""
     if origins:
         origin_str, origin_bindparams = array2sql(
@@ -583,6 +610,7 @@ def create_annotation_query(
                 f"{comp_function} (:annotations_filter_value_{param_index})::float",
                 localization_dateobs,
                 params,
+                key=annotations_filter[0].strip(),
             )
             stmts.append(
                 f"""
@@ -607,6 +635,7 @@ def create_annotation_query(
                 f"value ->> :annotations_filter_name_{param_index} IS NOT NULL",
                 localization_dateobs,
                 params,
+                key=annotations_filter[0].strip(),
             )
             stmts.append(
                 f"""
@@ -979,7 +1008,7 @@ async def get_sources(
             try:
                 sourceID = str(sourceID).strip()
                 query_params.append(
-                    bindparam("sourceID", value=sourceID, type_=sa.String)
+                    bindparam("sourceID", value=sourceID.lower(), type_=sa.String)
                 )
 
                 # we try to detect a potential TNS name as the sourceID,
@@ -1017,7 +1046,7 @@ async def get_sources(
                 )
                 statements.append(
                     f"""
-                        (objs.id LIKE '%' || :sourceID || '%'{" OR objs.tns_name LIKE '%' || :tns_name || '%'" if tns_name is not None else ""}
+                        (lower(objs.id) LIKE '%' || :sourceID || '%'{" OR lower(objs.tns_name) LIKE '%' || :tns_name || '%'" if tns_name is not None else ""}
                          OR EXISTS (SELECT 1 FROM unnest(objs.alias) AS a WHERE replace(lower(a), ' ', '') LIKE '%' || :alias_name || '%'))
                         """
                 )
@@ -1697,6 +1726,14 @@ async def get_sources(
         # FOLLOWUP REQUESTS
         if has_followup_request:
             # we already grabbed the allocation's ids in advance, so we can use them here
+            if is_admin:
+                allocation_filter = ""
+            elif len(allocation_ids) > 0:
+                allocation_filter = (
+                    "and followuprequests.allocation_id in :allocation_ids"
+                )
+            else:
+                allocation_filter = "and false"
             try:
                 if followup_request_status is not None:
                     query_params.append(
@@ -1709,13 +1746,13 @@ async def get_sources(
                     # if it contains the string, both lowercased, then we have a match
                     statements.append(
                         f"""
-                        EXISTS (SELECT obj_id from followuprequests where followuprequests.obj_id=objs.id and lower(followuprequests.status) LIKE '%' || lower(:has_followup_request_status) || '%' {"and followuprequests.allocation_id in :allocation_ids" if not is_admin else ""})
+                        EXISTS (SELECT obj_id from followuprequests where followuprequests.obj_id=objs.id and lower(followuprequests.status) LIKE '%' || lower(:has_followup_request_status) || '%' {allocation_filter})
                         """
                     )
                 else:
                     statements.append(
                         f"""
-                        EXISTS (SELECT obj_id from followuprequests where followuprequests.obj_id=objs.id {"and followuprequests.allocation_id in :allocation_ids" if len(allocation_ids) > 0 else ""})
+                        EXISTS (SELECT obj_id from followuprequests where followuprequests.obj_id=objs.id {allocation_filter})
                         """
                     )
             except Exception as e:
@@ -2005,7 +2042,7 @@ async def get_sources(
                     if localization_reject_sources:
                         statements.append(
                             """
-                            gcneventobjs.status <> 'rejected'
+                            gcneventobjs.status IS DISTINCT FROM 'rejected'
                             """
                         )
                 if include_sources_in_gcn:
@@ -2233,6 +2270,8 @@ async def get_sources(
 
         else:
             all_obj_ids = []
+            total_matches = None
+            page_offset = 0
 
             if use_cache and query_id is not None:
                 cache_filename = cache[query_id]
@@ -2410,8 +2449,12 @@ async def get_sources(
                             """
                         )
 
+                    total_column = (
+                        "" if use_cache else ", COUNT(*) OVER () AS total_matches"
+                    )
+
                     # ADD QUERY STATEMENTS
-                    statement = f"""SELECT {OBJ_ID_TOKEN} AS id, MAX(sources.saved_at) AS most_recent_saved_at
+                    statement = f"""SELECT {OBJ_ID_TOKEN} AS id, MAX(sources.saved_at) AS most_recent_saved_at{total_column}
                         FROM {SOURCES_FROM_TOKEN}
                         {" ".join(joins)}
                         WHERE {" AND ".join(statements)}
@@ -2480,6 +2523,11 @@ async def get_sources(
                             f"""ORDER BY {SORT_BY[sort_by]} {sort_order.upper()}"""
                         )
 
+                    if not use_cache:
+                        statement += (
+                            f", {OBJ_ID_TOKEN} LIMIT {end - start} OFFSET {start}"
+                        )
+
                     statement = (
                         text(resolve_obj_join(statement))
                         .bindparams(*query_params)
@@ -2491,12 +2539,15 @@ async def get_sources(
 
                     startTime = time.time()
 
-                    results = await session.execute(statement)
+                    results = (await session.execute(statement)).all()
                     all_obj_ids = [r[0] for r in results]
                     if len(all_obj_ids) != len(set(all_obj_ids)):
                         raise ValueError(
                             f"Duplicate obj_ids in query results, query is incorrect: {all_obj_ids}"
                         )
+                    if not use_cache:
+                        total_matches = results[0].total_matches if results else 0
+                        page_offset = start
 
                     endTime = time.time()
                     if verbose:
@@ -2513,7 +2564,8 @@ async def get_sources(
                     cache[query_id] = all_obj_ids_bytes
                     data["queryID"] = query_id
 
-            objs, total_matches = [], len(all_obj_ids)
+            if total_matches is None:
+                total_matches = len(all_obj_ids)
             data["totalMatches"] = total_matches
             if start > total_matches:
                 return data
@@ -2522,7 +2574,7 @@ async def get_sources(
 
             startTime = time.time()
 
-            obj_ids = all_obj_ids[start:end]
+            obj_ids = all_obj_ids[start - page_offset : end - page_offset]
             if isinstance(obj_ids, np.ndarray):
                 obj_ids = obj_ids.tolist()
             objs_result = await session.scalars(
@@ -2993,11 +3045,20 @@ async def get_sources(
                 query_str, bindparams = array2sql(
                     obj_ids, type=sa.String, prefix="obj_ids"
                 )
+                # ObjTag.read: non-admins only see tags shared with one of their groups
+                groups_filter = ""
+                if not is_admin:
+                    groups_filter = (
+                        "AND obj_tags.id IN (SELECT obj_tag_id FROM group_obj_tags "
+                        f"WHERE group_id IN {accessible_groups_query_str})"
+                    )
+                    bindparams += accessible_groups_bindparams
                 stmt = f"""
                 SELECT obj_tags.obj_id, obj_tags.id, objtagoptions.name, obj_tags.objtagoption_id
                 FROM obj_tags
                 JOIN objtagoptions ON obj_tags.objtagoption_id = objtagoptions.id
                 WHERE obj_tags.obj_id IN {query_str}
+                {groups_filter}
                 """
 
                 tags_result = await session.execute(text(stmt).bindparams(*bindparams))

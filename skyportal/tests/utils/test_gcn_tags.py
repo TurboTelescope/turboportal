@@ -1,15 +1,39 @@
 from skyportal.utils.gcn import (
     from_igwn_gwalert,
+    get_json_aliases,
     get_json_tags,
+    get_json_trigger_id,
     properties_tags_from_meta,
 )
 
 
 def test_get_json_tags():
-    assert get_json_tags({"instrument": "WXT"}) == ["Einstein Probe"]
+    assert get_json_tags({"instrument": "WXT"}) == ["Einstein Probe", "X-ray"]
     assert get_json_tags({"instrument": "BAT-GUANO"}) == ["GUANO"]
     assert get_json_tags({"instrument": "ZTF"}) == []
     assert get_json_tags({}) == []
+
+
+def test_get_json_aliases():
+    assert get_json_aliases({"instrument": "WXT", "id": ["01709319528"]}) == [
+        "EP#01709319528"
+    ]
+    assert get_json_aliases({"instrument": "WXT", "id": "01709319528"}) == [
+        "EP#01709319528"
+    ]
+    assert get_json_aliases({"instrument": "WXT", "id": []}) == []
+    assert get_json_aliases({"instrument": "WXT"}) == []
+    assert get_json_aliases({"instrument": "BAT-GUANO", "id": ["1234"]}) == []
+    assert get_json_aliases({}) == []
+
+
+def test_get_json_trigger_id():
+    payload = {"instrument": "WXT", "id": ["01709319528"]}
+    assert get_json_trigger_id(payload) == "01709319528"
+    assert get_json_trigger_id({"instrument": "WXT", "id": 1709319528}) == "1709319528"
+    assert get_json_trigger_id({"instrument": "WXT"}) is None
+    assert get_json_trigger_id({"instrument": "ZTF", "id": ["1234"]}) is None
+    assert get_json_trigger_id({}) is None
 
 
 def test_get_json_tags_igwn_gwalert():
@@ -62,6 +86,26 @@ def test_from_igwn_gwalert_normalization():
     assert retr["notice_type"] == "LVC_RETRACTION"
     assert retr["retraction"] is True
     assert "trigger_time" not in retr and "healpix_file" not in retr
+
+
+def test_from_igwn_gwalert_skymap_name_per_alert():
+    def update(skymap):
+        return {
+            "superevent_id": "S260101a",
+            "alert_type": "UPDATE",
+            "event": {"time": "2026-01-01T00:00:00Z", "skymap": skymap},
+        }
+
+    def name(alert):
+        return alert["healpix_file"].split(";base64,")[0]
+
+    first = from_igwn_gwalert(update("ZmFrZQ=="))
+    # a later alert with a new map gets its own localization name...
+    assert name(from_igwn_gwalert(update("b3RoZXI="))) != name(first)
+    # ...while the same map again keeps the same one, so it is skipped
+    assert name(from_igwn_gwalert(update("ZmFrZQ=="))) == name(first)
+    # the service and post_gcnevent_from_json both normalize the same alert
+    assert from_igwn_gwalert(first)["healpix_file"] == first["healpix_file"]
 
 
 def test_properties_tags_from_meta_near_distance():

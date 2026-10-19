@@ -1263,10 +1263,13 @@ class FollowupRequestHandler(BaseHandler):
                     selectinload(FollowupRequest.requester),
                     selectinload(FollowupRequest.obj),
                     selectinload(FollowupRequest.watchers),
-                    selectinload(FollowupRequest.transaction_requests),
-                    selectinload(FollowupRequest.transactions),
                     selectinload(FollowupRequest.target_groups),
                 )
+                if session.user_or_token.is_admin:
+                    followup_requests = followup_requests.options(
+                        selectinload(FollowupRequest.transaction_requests),
+                        selectinload(FollowupRequest.transactions),
+                    )
                 followup_request = await session.scalar(followup_requests)
                 if followup_request is None:
                     return self.error("Could not retrieve followup request.")
@@ -1744,10 +1747,7 @@ class FollowupRequestCommentHandler(BaseHandler):
                 await session.commit()
                 self.push_all(
                     action="skyportal/REFRESH_ALLOCATION_REQUEST_COMMENT",
-                    payload={
-                        "followup_request_id": followup_request.id,
-                        "followup_request_comment": followup_request.comment,
-                    },
+                    payload={"followup_request_id": followup_request.id},
                 )
                 return self.success({"id": followup_request.id})
             except Exception as e:

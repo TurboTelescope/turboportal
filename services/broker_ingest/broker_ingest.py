@@ -15,6 +15,7 @@ Enable with `brokers.ingest_enabled: true` in the config.
 
 import asyncio
 import sys
+import time
 
 import sqlalchemy as sa
 
@@ -41,19 +42,26 @@ for _arg in sys.argv[1:]:
 # How often to re-scan the DB for newly-added / activated brokers.
 RESCAN_INTERVAL = 60  # seconds
 
+MAX_RETRY_INTERVAL = 3600  # seconds, ceiling on the wait between two attempts
+
 
 async def _run_broker(broker):
     """Run one broker's ingestion loop, logging (not raising) on failure so a
-    single broker crash doesn't take down the service."""
+    single broker crash doesn't take down the service. Returns whether it ended
+    without crashing."""
     try:
         await broker.broker_class.run_ingestion(broker)
     except Exception as e:
         log(f"broker {broker.id} ({broker.name}) ingestion crashed: {e}")
+        return False
+    return True
 
 
 async def _active_ingestion_brokers(session):
     brokers = (
-        await session.scalars(sa.select(Broker).where(Broker.active.is_(True)))
+        await session.scalars(
+            sa.select(Broker).where(Broker.active.is_(True), Broker.ingest.is_(True))
+        )
     ).all()
     wanted = {}
     for b in brokers:
@@ -61,10 +69,13 @@ async def _active_ingestion_brokers(session):
             if not b.broker_class.implements().get("run_ingestion"):
                 continue
             # Replica processes run only providers safe to replicate across a
-            # shared Kafka consumer group; REST pollers stay on process 0.
-            if _PROCESS_INDEX > 0 and not getattr(
-                b.broker_class, "parallel_ingestion", False
-            ):
+            # shared Kafka consumer group; REST pollers stay on process 0. A
+            # provider that is one or the other depending on its configuration
+            # declares a callable and is asked about this broker.
+            parallel = getattr(b.broker_class, "parallel_ingestion", False)
+            if callable(parallel):
+                parallel = parallel(b.altdata)
+            if _PROCESS_INDEX > 0 and not parallel:
                 continue
             session.expunge(b)  # detached: used from a long-lived task
             wanted[b.id] = b
@@ -74,7 +85,10 @@ async def _active_ingestion_brokers(session):
 
 
 async def _run_loop():
-    running: dict[int, asyncio.Task] = {}
+    running: dict[int, tuple[asyncio.Task, object]] = {}
+    delay: dict[int, float] = {}
+    next_try: dict[int, float] = {}
+
     while True:
         try:
             # Resolve on the baselayer module at call time: init_db() rebinds the
@@ -86,11 +100,27 @@ async def _run_loop():
             log(f"failed to list brokers: {e}")
             wanted = {}
 
+        now = time.monotonic()
         for bid, broker in wanted.items():
-            task = running.get(bid)
-            if task is None or task.done():
-                log(f"starting ingestion for broker {bid} ({broker.name})")
-                running[bid] = asyncio.create_task(_run_broker(broker))
+            entry = running.get(bid)
+            if entry is not None:
+                task, started_on = entry
+                if not task.done():
+                    continue
+                running.pop(bid)
+                if broker.modified != started_on or task.result():
+                    delay.pop(bid, None)
+                    next_try.pop(bid, None)
+                else:
+                    delay[bid] = min(
+                        delay.get(bid, RESCAN_INTERVAL) * 2, MAX_RETRY_INTERVAL
+                    )
+                    next_try[bid] = now + delay[bid]
+                    log(f"retrying broker {bid} in {delay[bid]:.0f}s")
+            if now < next_try.get(bid, 0):
+                continue
+            log(f"starting ingestion for broker {bid} ({broker.name})")
+            running[bid] = (asyncio.create_task(_run_broker(broker)), broker.modified)
 
         await asyncio.sleep(RESCAN_INTERVAL)
 

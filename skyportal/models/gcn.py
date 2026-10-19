@@ -18,14 +18,9 @@ import random
 import astropy.units as u
 import jinja2
 import lxml
-import matplotlib
-import matplotlib.pyplot as plt
 import numpy as np
 import sqlalchemy as sa
-from ligo.skymap import (
-    plot,  # noqa: F401 F811
-    postprocess,
-)
+from ligo.skymap import postprocess
 from mocpy import MOC
 from sqlalchemy import UniqueConstraint, func, select
 from sqlalchemy.dialects.postgresql import JSONB
@@ -221,6 +216,11 @@ class GcnReport(Base):
 
         center = postprocess.posterior_max(localization.flat_2d)
 
+        # deferred: pyplot and the ligo.skymap projections are only needed to plot
+        import matplotlib
+        import matplotlib.pyplot as plt
+        from ligo.skymap import plot  # noqa: F401
+
         matplotlib.use("Agg")
         fig = plt.figure(figsize=figsize, constrained_layout=False)
         ax = plt.axes(projection="astro globe", center=center)
@@ -338,13 +338,13 @@ class GcnReport(Base):
         pub_html = self.get_html()
         pub_plot = self.get_plot()
         cache[cache_key] = dict_to_bytes(
-            {"published": True, "html": pub_html, "plot": pub_plot}
+            {"published": self.published, "html": pub_html, "plot": pub_plot}
         )
 
     def publish(self):
         """Publish GcnReport."""
-        self.generate_report()
         self.published = True
+        self.generate_report()
 
     def unpublish(self):
         """Unpublish GcnReport."""
@@ -946,7 +946,14 @@ class GcnEvent(Base):
         except IndexError:
             return None
         if notice.notice_format == "json":
-            return None
+            return next(
+                (
+                    a.split("#", 1)[1]
+                    for a in self.aliases or []
+                    if a.startswith("LVC#")
+                ),
+                None,
+            )
         try:
             root = lxml.etree.fromstring(notice.content)
             elem = root.find(".//Param[@name='GraceID']")

@@ -12,7 +12,7 @@ from baselayer.app.env import load_env
 from baselayer.log import make_log
 
 from ..utils.cache import Cache, cache_folder, dict_to_bytes
-from ..utils.survey import survey_from_object_id
+from ..utils.survey import instrument_name, survey_from_object_id
 from .interface import survey_permissions
 
 _, cfg = load_env()
@@ -37,10 +37,14 @@ _PAYLOAD_KEYS = (
     "flux",
     "fluxerr",
     "filter",
+    "origin",
     "zp",
     "magsys",
     "ra",
     "dec",
+    # Parallel arrays the standardizer attaches per row, so a point the broker
+    # serves without it ever being saved still knows which alert it came from.
+    "altdata",
 )
 
 
@@ -65,16 +69,26 @@ def _dedup_key(point):
         point.get("obj_id"),
         point.get("instrument_id"),
         point.get("filter"),
+        point.get("origin"),
         _round_mjd(point.get("mjd")),
     )
 
 
 def _phot_dedup_key(phot):
-    return (phot.obj_id, phot.instrument_id, phot.filter, _round_mjd(phot.mjd))
+    return (
+        phot.obj_id,
+        phot.instrument_id,
+        phot.filter,
+        phot.origin,
+        _round_mjd(phot.mjd),
+    )
 
 
 def merge_photometry_points(db_points, broker_points):
-    """Union DB and broker photometry, the DB point winning on (obj, instrument, filter, mjd)."""
+    """Union DB and broker photometry, the DB point winning on the columns
+    ``Photometry.DEDUP_COLUMNS`` makes unique. Origin belongs in that key: without
+    it a forced measurement is dropped at every epoch an alert point already
+    covers, which on a ZTF light curve is nearly all of them."""
     seen = {_dedup_key(p) for p in db_points}
     return sorted(
         [*db_points, *(p for p in broker_points if _dedup_key(p) not in seen)],
@@ -138,10 +152,12 @@ async def fetch_broker_groups(cls, broker, object_id, survey, session):
         return {}
 
     instrument_id = await session.scalar(
-        sa.select(Instrument.id).where(Instrument.name == survey)
+        sa.select(Instrument.id).where(Instrument.name == instrument_name(survey))
     )
     if instrument_id is None:
-        raise ValueError(f"Instrument '{survey}' not found in the database.")
+        raise ValueError(
+            f"Instrument '{instrument_name(survey)}' not found in the database."
+        )
     programid2streamid = await programid_to_stream_ids(session)
 
     try:
@@ -366,6 +382,7 @@ async def transient_photometry(groups, session):
                 flux=row.get("standardized_flux"),
                 fluxerr=row.get("standardized_fluxerr"),
                 origin=row.get("origin"),
+                altdata=row.get("altdata"),
             )
             # serialize()/PhotStat read phot.instrument, which no query would load here
             instrument = instrument_cache.get(row["instrument_id"])

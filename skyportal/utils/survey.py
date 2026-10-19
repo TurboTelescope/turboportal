@@ -7,6 +7,19 @@ OBJECT_ID_PATTERNS = {
     "TURBO": r"TURBO\d{2}[a-z]{7}$",  # TURBO + 2 digits + 7 lowercase characters
 }
 
+# Surveys whose instrument is not named after the survey.
+INSTRUMENT_PER_SURVEY = {"DECAM": "DECam"}
+
+
+def instrument_name(survey):
+    """The name of the Instrument a survey's photometry is stored under."""
+    return INSTRUMENT_PER_SURVEY.get(survey, survey)
+
+
+def survey_from_instrument(name):
+    """The survey whose photometry an Instrument holds, inverse of ``instrument_name``."""
+    return next((s for s, i in INSTRUMENT_PER_SURVEY.items() if i == name), name)
+
 
 def survey_from_object_id(object_id, surveys=None):
     """Survey an object id belongs to, from its shape ("ZTF18abcdefg" -> ZTF, a

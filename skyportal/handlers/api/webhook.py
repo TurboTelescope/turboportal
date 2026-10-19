@@ -9,7 +9,7 @@ from baselayer.app.env import load_env
 from baselayer.app.flow import Flow
 from baselayer.log import make_log
 
-from ...models import Annotation, ObjAnalysis
+from ...models import Annotation, Classification, Group, ObjAnalysis, Source, Taxonomy
 from ...utils.embedding_store import delete_embedding, upsert_embedding
 from ...utils.embedding_store_config import summary_embeddings_enabled
 from ...utils.naive_datetime import utcnow_naive
@@ -91,7 +91,9 @@ class AnalysisWebhookHandler(BaseHandler):
 
                 # lock the analysis associated with this token and commit immediately
                 # to avoid race conditions, so results are not written more than once
-                analysis.status = "completed"
+                analysis.status = (
+                    "completed" if (body.status or "error") == "success" else "failure"
+                )
                 analysis.last_activity = utcnow_naive()
                 analysis.duration = (
                     analysis.last_activity - last_active
@@ -101,8 +103,6 @@ class AnalysisWebhookHandler(BaseHandler):
                 log(f"Trouble accessing Analysis with token {token} {e}.")
                 return self.error("Invalid token", status=403)
 
-            if (body.status or "error") != "success":
-                analysis.status = "failure"
             analysis.status_message = body.message or ""
 
             results = body.analysis or {}
@@ -121,10 +121,47 @@ class AnalysisWebhookHandler(BaseHandler):
             # the source page). Upsert one per origin so a re-run refreshes rather
             # than piling up; default the origin to the service name. Obj-scoped
             # only (annotations attach to an Obj).
+            made_classification = False
             if analysis_resource_type.lower() == "obj":
                 await _upsert_analysis_annotations(session, analysis, results)
+                made_classification = await _upsert_analysis_classifications(
+                    session, analysis, results
+                )
 
             await session.commit()
+
+            # A completed ML analysis triggers autonomous skybot triage runs that
+            # explain it (read-only; off unless configured). Which services trigger
+            # which prompt is config (app.assistant.analysis_triage.tasks).
+            if (
+                analysis_resource_type.lower() == "obj"
+                and (body.status or "error") == "success"
+            ):
+                from tornado.ioloop import IOLoop
+
+                from ...utils.assistant import post_to_assistant
+                from ...utils.assistant_triage import (
+                    enqueue_query_run,
+                    matching_queries,
+                    triage_enabled,
+                )
+
+                if triage_enabled(cfg):
+                    for query in await matching_queries(session, analysis):
+                        try:
+                            message_id = await enqueue_query_run(
+                                session, analysis, query
+                            )
+                            if message_id is not None:
+                                await IOLoop.current().run_in_executor(
+                                    None,
+                                    lambda mid=message_id: post_to_assistant(cfg, mid),
+                                )
+                        except Exception as e:
+                            log(
+                                f"Could not enqueue assistant query {query.id} for "
+                                f"{analysis.obj_id}: {e}"
+                            )
 
             try:
                 flow = Flow()
@@ -167,6 +204,12 @@ class AnalysisWebhookHandler(BaseHandler):
                             "skyportal/REFRESH_OBJ_ANALYSES",
                             payload={"obj_key": analysis.obj.internal_key},
                         )
+                        if made_classification:
+                            flow.push(
+                                "*",
+                                "skyportal/REFRESH_SOURCE",
+                                payload={"obj_key": analysis.obj.internal_key},
+                            )
                     elif analysis_resource_type.lower() == "gcn_event":
                         flow.push(
                             "*",
@@ -202,6 +245,22 @@ async def _store_summary_embedding(session, analysis, summary_results):
         log(f"Could not store the summary embedding for {analysis.obj_id}: {e}")
 
 
+async def _obj_saved_groups(session, analysis):
+    """The groups the source is saved to, so results follow the source rather than
+    every group the analysis run was shared with. Falls back to the analysis's own
+    groups when the object is not saved anywhere (e.g. a candidate-only obj)."""
+    import sqlalchemy as sa
+
+    group_ids = set(
+        await session.scalars(
+            sa.select(Source.group_id).where(Source.obj_id == analysis.obj_id)
+        )
+    )
+    if not group_ids:
+        return list(analysis.groups)
+    return list(await session.scalars(sa.select(Group).where(Group.id.in_(group_ids))))
+
+
 async def _upsert_analysis_annotations(session, analysis, results):
     """Create or refresh the annotations an analysis service returned.
 
@@ -212,6 +271,7 @@ async def _upsert_analysis_annotations(session, analysis, results):
     import sqlalchemy as sa
 
     annotations = results.get("annotations") if isinstance(results, dict) else None
+    saved_groups = await _obj_saved_groups(session, analysis)
     # A run scoped to only the author's single-user group is private: namespace
     # its annotation origin so it neither clobbers nor leaks into the shared
     # per-service annotation, which is matched by obj_id + origin alone.
@@ -238,9 +298,92 @@ async def _upsert_analysis_annotations(session, analysis, results):
                     origin=origin,
                     data=ann["data"],
                     author_id=analysis.author_id,
-                    groups=list(analysis.groups),
+                    groups=saved_groups,
                 )
             )
+
+
+def _allowed_classes(hierarchy):
+    if "class" in hierarchy:
+        yield hierarchy["class"]
+    for item in hierarchy.get("subclasses", []) or []:
+        yield from _allowed_classes(item)
+
+
+async def _resolve_taxonomy(session, entry):
+    """The taxonomy an ML classification names, by id or (latest) name."""
+    import sqlalchemy as sa
+
+    if entry.get("taxonomy_id") is not None:
+        return await session.scalar(
+            sa.select(Taxonomy).where(Taxonomy.id == entry["taxonomy_id"])
+        )
+    name = entry.get("taxonomy")
+    if not name:
+        return None
+    return await session.scalar(
+        sa.select(Taxonomy)
+        .where(Taxonomy.name == name, Taxonomy.isLatest.is_(True))
+        .order_by(Taxonomy.id.desc())
+    )
+
+
+async def _upsert_analysis_classifications(session, analysis, results):
+    """Create or refresh the ML classifications an analysis service returned.
+
+    Each entry is ``{"taxonomy"|"taxonomy_id", "classification", "probability",
+    "origin"}``; it is written as ``ml=True`` and kept one per (obj, taxonomy,
+    origin) so a re-run refreshes in place. The label must be in the taxonomy, so a
+    service maps its own classes onto one SkyPortal ships. Returns whether any were
+    written, so the caller can refresh the source.
+    """
+    import sqlalchemy as sa
+
+    entries = results.get("classifications") if isinstance(results, dict) else None
+    made = False
+    saved_groups = await _obj_saved_groups(session, analysis)
+    for entry in entries or []:
+        if not isinstance(entry, dict) or not entry.get("classification"):
+            continue
+        taxonomy = await _resolve_taxonomy(session, entry)
+        if taxonomy is None:
+            log(f"FLARE/ML classification skipped: no taxonomy for {entry}")
+            continue
+        if entry["classification"] not in _allowed_classes(taxonomy.hierarchy):
+            log(
+                f"ML classification {entry['classification']!r} not in taxonomy "
+                f"{taxonomy.name!r}; skipping"
+            )
+            continue
+        origin = entry.get("origin") or analysis.analysis_service.name
+        probability = entry.get("probability")
+        existing = await session.scalar(
+            sa.select(Classification).where(
+                Classification.obj_id == analysis.obj_id,
+                Classification.taxonomy_id == taxonomy.id,
+                Classification.origin == origin,
+            )
+        )
+        if existing is not None:
+            existing.classification = entry["classification"]
+            existing.probability = probability
+            existing.ml = True
+        else:
+            session.add(
+                Classification(
+                    classification=entry["classification"],
+                    obj_id=analysis.obj_id,
+                    origin=origin,
+                    probability=probability,
+                    ml=True,
+                    taxonomy_id=taxonomy.id,
+                    author_id=analysis.author_id,
+                    author_name=analysis.author.username,
+                    groups=saved_groups,
+                )
+            )
+        made = True
+    return made
 
 
 def sa_select_analysis_by_token(token, analysis_resource_type="obj"):

@@ -75,6 +75,12 @@ class Thumbnail(Base):
         uselist=False,
         doc="The Thumbnail's Photometry point, if it is per-epoch.",
     )
+    observed_at = sa.Column(
+        sa.DateTime,
+        nullable=True,
+        doc="UTC time of the alert observation the cutout comes from; NULL for "
+        "archival thumbnails and when unknown.",
+    )
     is_grayscale = sa.Column(
         sa.Boolean(),
         nullable=True,

@@ -1578,7 +1578,7 @@ export interface paths {
         put?: never;
         /**
          * Validate a broker filter version for activation
-         * @description Run the broker's activation validation for a filter version without changing state, and record the result on the filter so it can be activated (skyportal gates activation on this).
+         * @description Start the broker's activation validation for a filter version in the background. The version is marked pending on the filter until the verdict is recorded there (skyportal gates activation on it).
          */
         post: {
             parameters: {
@@ -1774,6 +1774,10 @@ export interface paths {
                     streamID?: number | null;
                     /** @description A broker id, or "none" for filters attached to no broker. */
                     brokerID?: string | null;
+                    /** @description Field to sort by. Options are 'name' (default) or 'active' (the broker-side state, filters the broker can't report last). */
+                    sortBy?: "name" | "active";
+                    /** @description Sort order - 'asc' for ascending (default) or 'desc' for descending. */
+                    sortOrder?: "asc" | "desc";
                 };
                 header?: never;
                 path?: never;
@@ -2069,7 +2073,7 @@ export interface paths {
         head?: never;
         /**
          * Update a broker filter
-         * @description <b>Permission(s) required:</b> <em>Upload data (or System admin)</em><br><br>Activate a version (``active``/``active_fid``, forwarded to the broker) or toggle autoAnnotate/autoSave/autoFollowup flags.
+         * @description <b>Permission(s) required:</b> <em>Upload data (or System admin)</em><br><br>Activate a version (``active``/``active_fid``, forwarded to the broker), comment on a version (``fid``/``comment``) or toggle autoAnnotate/autoSave/autoFollowup flags.
          */
         patch: {
             parameters: {
@@ -2279,6 +2283,100 @@ export interface paths {
                     };
                 };
                 403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/brokers/photometry/{photometry_id}/alert": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get the alert a photometry point came from
+         * @description Return the alert id, survey and broker for the alert a photometry point was ingested from, enough to fetch its cutouts. Forced photometry has no alert behind it and reports that.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    photometry_id: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Success"];
+                    };
+                };
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/brokers/photometry/alert": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get the alert a photometry point came from
+         * @description Return the alert id, survey and broker for the alert a photometry point was ingested from, enough to fetch its cutouts. Forced photometry has no alert behind it and reports that.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Success"];
+                    };
+                };
+                400: {
                     headers: {
                         [name: string]: unknown;
                     };
@@ -3074,6 +3172,8 @@ export interface paths {
                     autosaveGroupIds?: number[] | null;
                     /** @description String indicating the saved status to filter candidate results for. Must be one of the enumerated values. */
                     savedStatus?: "all" | "savedToAllSelected" | "savedToAnySelected" | "savedToAnyAccessible" | "notSavedToAnyAccessible" | "notSavedToAnySelected" | "notSavedToAllSelected";
+                    /** @description Comma-separated string of group IDs (e.g. "1,2") that the "Selected" saved statuses check against. Defaults to the groups of the candidates' filters. */
+                    savedGroupIDs?: string | null;
                     /** @description Arrow-parseable date string (e.g. 2020-01-01). If provided, filter by Candidate.passed_at >= startDate */
                     startDate?: string | null;
                     /** @description Arrow-parseable date string (e.g. 2020-01-01). If provided, filter by Candidate.passed_at <= endDate */
@@ -3092,6 +3192,10 @@ export interface paths {
                     minAbsGalacticLatitude?: number | null;
                     /** @description Keep only candidates whose crossmatch star/galaxy score is below this. A high score means the candidate sits on a star. */
                     maxSgscore?: number | null;
+                    /** @description Keep only candidates at or inside this credible level of the event's localization, so 0.9 keeps the 90 percent region. A candidate near 1 sits in the tail, which for a wide localization can be tens of degrees from the event. */
+                    maxCredibleLevel?: number | null;
+                    /** @description Keep only candidates at least this many arcseconds from the nearest PS1 source, to drop those sitting on a catalogued object. A candidate with no PS1 match at all is kept. */
+                    minDistpsnr?: number | null;
                     /** @description Keep only candidates with at least this many detections in their alert history. */
                     minNdethist?: number | null;
                     /** @description Keep only candidates detected within this many days of the event, i.e. |delta_t| <= this. Applies to every candidate. */
@@ -3564,6 +3668,8 @@ export interface paths {
                     startDate?: string | null;
                     /** @description Arrow-parseable date string (e.g. 2020-01-01) for when the classification was made. If provided, filter by created_at <= endDate */
                     endDate?: string | null;
+                    /** @description Comma separated string of origins. If provided, only classifications from these origins are returned, matched without regard to case. A classification with no origin is never returned when this is given. */
+                    origin?: string | null;
                 };
                 header?: never;
                 path?: never;
@@ -3733,6 +3839,8 @@ export interface paths {
                     startDate?: string | null;
                     /** @description Arrow-parseable date string (e.g. 2020-01-01). If provided, filter by created_at <= endDate */
                     endDate?: string | null;
+                    /** @description Comma separated string of origins. If provided, only classifications from these origins are returned, matched without regard to case. A classification with no origin is never returned when this is given. */
+                    origin?: string | null;
                     /** @description Return associated taxonomy. */
                     includeTaxonomy?: boolean;
                     /** @description Number of sources to return per paginated request. Defaults to 100. Max 500. */
@@ -6606,6 +6714,118 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/moving_object/track": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Measure a linked moving-object track
+         * @description Measure each detection of a track in its difference cutout and report
+         *     what decides whether the track is one real object: per-epoch
+         *     significance and centroid offset, how the position angle turns along
+         *     the arc, the residual about a smooth motion model, and whether the
+         *     pixels order the bands the way the photometry does.
+         *
+         *     Measuring needs real pixel values, so this requires a broker that
+         *     returns FITS. A broker serving rendered PNGs is refused rather than
+         *     measured, because a display stretch has already destroyed the flux
+         *     scale.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["MovingObjectTrackPostBody"];
+                };
+            };
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Success"];
+                    };
+                };
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/moving_object/track/{track_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get a linked track and its detections
+         * @description Fetch one track from the broker by its id, with the detections that
+         *     make it up. The track stores candids only, so the positions are
+         *     fetched alongside them: a vetting view needs jd/ra/dec/mag/band.
+         *
+         *     Detections the requester's streams do not cover are omitted and
+         *     counted, so a partially visible track cannot pass for a short one.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    track_id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Success"];
+                    };
+                };
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/earthquake/status": {
         parameters: {
             query?: never;
@@ -8159,7 +8379,7 @@ export interface paths {
         post?: never;
         /**
          * Delete a GCN Event
-         * @description Delete a GCN event
+         * @description <b>Permission(s) required:</b> <em>Manage GCNs (or System admin)</em><br><br>Delete a GCN event
          */
         delete: {
             parameters: {
@@ -10850,7 +11070,7 @@ export interface paths {
         post?: never;
         /**
          * Delete a group admission request
-         * @description <b>Permission(s) required:</b> <em>Upload data (or System admin)</em><br><br>Delete a group admission request
+         * @description Delete a group admission request
          */
         delete: {
             parameters: {
@@ -11457,8 +11677,8 @@ export interface paths {
                 query?: {
                     /** @description Bool indicating whether to include used invitations. Defaults to false. */
                     includeUsed?: boolean;
-                    /** @description Number of invitations to return per paginated request. Defaults to 25. */
-                    numPerPage?: number;
+                    /** @description Number of invitations to return per paginated request. Defaults to all. */
+                    numPerPage?: number | null;
                     /** @description Page number for paginated query results. Defaults to 1. */
                     pageNumber?: number;
                     /** @description Get invitations whose email contains this string. */
@@ -12425,7 +12645,7 @@ export interface paths {
         get: {
             parameters: {
                 query?: {
-                    /** @description Only return runs that have not finished yet. Callers offering a run to assign a target to want these, rather than every run ever scheduled. */
+                    /** @description Only return runs that have not finished yet or finished within the last two days. Callers offering a run to assign a target to want these, rather than every run ever scheduled. */
                     upcomingOnly?: boolean;
                     /** @description Number of runs to return per paginated request. Defaults to all runs. */
                     numPerPage?: number | null;
@@ -13470,7 +13690,7 @@ export interface paths {
         head?: never;
         /**
          * Update a tag option
-         * @description Update an existing tag option's name and/or color
+         * @description <b>Permission(s) required:</b> <em>Manage sources (or System admin)</em><br><br>Update an existing tag option's name and/or color
          */
         patch: {
             parameters: {
@@ -16250,6 +16470,44 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/source_interests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Retrieve all source interests
+         * @description Retrieve every interest registered on the sources the user can access.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Success"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/sources/{obj_id}/interests": {
         parameters: {
             query?: never;
@@ -18438,7 +18696,7 @@ export interface paths {
         put?: never;
         /**
          * Ingest a Spatial Catalog
-         * @description Ingest a Spatial Catalog
+         * @description <b>Permission(s) required:</b> <em>Upload data (or System admin)</em><br><br>Ingest a Spatial Catalog
          */
         post: {
             parameters: {
@@ -20277,6 +20535,587 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/deployments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get deployments and instance information
+         * @description Running version, deployment history with the commits each deployment
+         *     brought, and (for system admins) details on the host, database and
+         *     services.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Success"] & {
+                            data?: components["schemas"]["DeploymentsResponse"];
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/feedback/{feedback_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Retrieve messages left to the admins
+         * @description The requesting user's own messages, or every message for system admins.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    feedback_id: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Success"] & {
+                            data?: components["schemas"]["FeedbackListResponse"];
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Mark a message left to the admins as handled, reopen it, or assign it
+         * @description <b>Permission(s) required:</b> <em>System admin (or System admin)</em><br><br>
+         */
+        patch: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    feedback_id: number;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["FeedbackPatchBody"];
+                };
+            };
+            responses: never;
+        };
+        trace?: never;
+    };
+    "/api/feedback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Leave a message to the admins
+         * @description Report a bug, request a change or say anything else. System admins are notified.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["FeedbackPostBody"];
+                };
+            };
+            responses: never;
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/feedback/{feedback_id}/replies": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reply to a message left to the admins
+         * @description <b>Permission(s) required:</b> <em>System admin (or System admin)</em><br><br>The author of the message is notified.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    feedback_id: number;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["FeedbackReplyPostBody"];
+                };
+            };
+            responses: never;
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/discussions/{discussion_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Retrieve your discussions
+         * @description The direct messages and group discussions the requesting user takes part in, latest activity first, with their unread message count.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    discussion_id: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Success"] & {
+                            data?: components["schemas"]["DiscussionListResponse"];
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        /**
+         * Delete a discussion
+         * @description Delete a discussion and all its messages. Restricted to whoever started it.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    discussion_id: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: never;
+        };
+        options?: never;
+        head?: never;
+        /** Rename a discussion */
+        patch: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    discussion_id: number;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["DiscussionPatchBody"];
+                };
+            };
+            responses: never;
+        };
+        trace?: never;
+    };
+    "/api/discussions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Start a discussion
+         * @description Start a group discussion with chosen users, or with every member of a group you belong to, or a direct message with one user (the one you already have with them is returned if it exists).
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["DiscussionPostBody"];
+                };
+            };
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Success"] & {
+                            data?: components["schemas"]["DiscussionPostResponse"];
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/discussions/{discussion_id}/messages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read a discussion
+         * @description The latest messages of a discussion, oldest first. Pass the ID of the oldest one received as `before` to get the ones preceding it.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description Only messages older than this message ID. */
+                    before?: number | null;
+                    limit?: number;
+                };
+                header?: never;
+                path: {
+                    discussion_id: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Success"] & {
+                            data?: components["schemas"]["DiscussionMessageListResponse"];
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        /**
+         * Send a message
+         * @description Post a message in a discussion. Participants are notified according to their preferences, unless they muted the discussion.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    discussion_id: number;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["DiscussionMessagePostBody"];
+                };
+            };
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Success"] & {
+                            data?: components["schemas"]["DiscussionPostResponse"];
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/discussions/{discussion_id}/messages/{message_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete a message
+         * @description Restricted to the author of the message.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    discussion_id: number;
+                    message_id: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: never;
+        };
+        options?: never;
+        head?: never;
+        /**
+         * Edit a message
+         * @description Restricted to the author of the message.
+         */
+        patch: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    discussion_id: number;
+                    message_id: number;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["DiscussionMessagePostBody"];
+                };
+            };
+            responses: never;
+        };
+        trace?: never;
+    };
+    "/api/discussions/{discussion_id}/members": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the members of a discussion
+         * @description The chosen members, or every member of the discussion's group.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    discussion_id: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Success"] & {
+                            data?: components["schemas"]["DiscussionMemberListResponse"];
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        /**
+         * Add users to a discussion
+         * @description Any member can add users to a discussion between chosen users.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    discussion_id: number;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["DiscussionMembersPostBody"];
+                };
+            };
+            responses: never;
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/discussions/{discussion_id}/members/{user_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Remove a user from a discussion
+         * @description Leave a discussion between chosen users, or remove someone from one you started. The discussion is deleted when its last member leaves.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    discussion_id: number;
+                    user_id: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: never;
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/discussions/{discussion_id}/membership": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Mark a discussion as read, or mute it */
+        patch: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    discussion_id: number;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["DiscussionMembershipPatchBody"];
+                };
+            };
+            responses: never;
+        };
+        trace?: never;
+    };
+    "/api/comment_threads": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Retrieve the comment threads you are involved in
+         * @description The comment threads, on sources, GCN events, earthquakes and shifts, where the requesting user wrote, latest activity first. Comments posted through the API (bots) are left out.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Success"] & {
+                            data?: components["schemas"]["CommentThreadListResponse"];
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/config": {
         parameters: {
             query?: never;
@@ -20309,6 +21148,8 @@ export interface paths {
                                  *     is enabled in current deployment.
                                  */
                                 invitationsEnabled?: boolean;
+                                /** @description Number of days an invitation link stays valid. */
+                                invitationsDaysUntilExpiry?: number;
                                 /**
                                  * @description Boolean indicating whether account applications are
                                  *     enabled in current deployment.
@@ -20502,6 +21343,216 @@ export interface paths {
             };
         };
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/assistant_queries/{query_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Retrieve one shared assistant query */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    query_id: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Success"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        /**
+         * Delete a shared assistant query
+         * @description Only the query's owner may delete it.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    query_id: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Success"];
+                    };
+                };
+            };
+        };
+        options?: never;
+        head?: never;
+        /**
+         * Update a shared assistant query
+         * @description Only the query's owner may edit it; only the sent fields change.
+         */
+        patch: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    query_id: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Success"];
+                    };
+                };
+            };
+        };
+        trace?: never;
+    };
+    "/api/assistant_queries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the shared assistant queries visible to the user
+         * @description Queries tied to a group the requesting user belongs to.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Success"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        /**
+         * Create a shared assistant query
+         * @description The creator must be a member of the query's group.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["AssistantQueryPostBody"];
+                };
+            };
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Success"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/assistant_queries/{query_id}/subscription": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Subscribe the requesting user to a query's notifications
+         * @description Allowed only for a query the user can see (in its group).
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    query_id: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Success"];
+                    };
+                };
+            };
+        };
+        /** Unsubscribe the requesting user from a query's notifications */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    query_id: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Success"];
+                    };
+                };
+            };
+        };
         options?: never;
         head?: never;
         patch?: never;
@@ -24074,6 +25125,18 @@ export interface components {
             context_type?: string | null;
             /** @description ID of that resource, if any. */
             context_id?: string | null;
+            /** @description Who to notify with the answer, as {'users': [ids], 'groups': [ids]}. Used by scheduled/triggered runs; a person chatting reads it in the panel. */
+            notify?: {
+                [key: string]: unknown;
+            } | null;
+            /** @description The tools the assistant ran to reach this answer, in order, as [{name, arguments, ok, summary}]. Shown so the reader can see what the answer rests on rather than taking the prose for it. */
+            tool_calls?: {
+                [key: string]: unknown;
+            } | null;
+            /** @description A filter pipeline the assistant arrived at, with whatever preview it ran, so the page can offer it for saving. Read out of tool_calls. */
+            proposal?: {
+                [key: string]: unknown;
+            } | null;
             /** @description Unique object identifier. */
             id?: number;
         };
@@ -24104,6 +25167,18 @@ export interface components {
             context_type?: string | null;
             /** @description ID of that resource, if any. */
             context_id?: string | null;
+            /** @description Who to notify with the answer, as {'users': [ids], 'groups': [ids]}. Used by scheduled/triggered runs; a person chatting reads it in the panel. */
+            notify?: {
+                [key: string]: unknown;
+            } | null;
+            /** @description The tools the assistant ran to reach this answer, in order, as [{name, arguments, ok, summary}]. Shown so the reader can see what the answer rests on rather than taking the prose for it. */
+            tool_calls?: {
+                [key: string]: unknown;
+            } | null;
+            /** @description A filter pipeline the assistant arrived at, with whatever preview it ran, so the page can offer it for saving. Read out of tool_calls. */
+            proposal?: {
+                [key: string]: unknown;
+            } | null;
         };
         SingleAssistantMessageNoID: {
             /** @enum {string} */
@@ -24116,6 +25191,134 @@ export interface components {
             status: "success";
             message?: string;
             data?: components["schemas"]["AssistantMessageNoID"][];
+        };
+        AssistantQuery: {
+            /** @description User who created the query. */
+            readonly owner?: components["schemas"]["User"];
+            /** @description Group the query is tied to. */
+            readonly group?: components["schemas"]["Group"];
+            readonly subscriptions?: components["schemas"]["AssistantQuerySubscription"][];
+            /** @description User who created the query. */
+            owner_id: number;
+            /** @description Group the query is tied to; its members can see and subscribe. */
+            group_id: number;
+            /** @description Short name shown in the list. */
+            name: string;
+            /** @description What the query does. */
+            description?: string | null;
+            /** @description Instruction run by the assistant. */
+            prompt: string;
+            /** @description Resource the query runs on (currently 'source'). */
+            context_type?: string;
+            /** @description Substring of an analysis service name; a completed matching analysis triggers the query. NULL for a query that is not analysis-triggered. */
+            analysis_service_match?: string | null;
+            /** @description Group ids always notified with the answer, besides the subscribers. */
+            notify_groups?: {
+                [key: string]: unknown;
+            } | null;
+            /** @description Whether the query runs. */
+            active?: boolean;
+            /** @description Run but notify no one (validation mode). */
+            dry_run?: boolean;
+            /** @description Unique object identifier. */
+            id?: number;
+        };
+        SingleAssistantQuery: {
+            /** @enum {string} */
+            status: "success";
+            message?: string;
+            data?: components["schemas"]["AssistantQuery"];
+        };
+        ArrayOfAssistantQuerys: {
+            /** @enum {string} */
+            status: "success";
+            message?: string;
+            data?: components["schemas"]["AssistantQuery"][];
+        };
+        AssistantQueryNoID: {
+            /** @description User who created the query. */
+            readonly owner?: components["schemas"]["User"];
+            /** @description Group the query is tied to. */
+            readonly group?: components["schemas"]["Group"];
+            readonly subscriptions?: components["schemas"]["AssistantQuerySubscription"][];
+            /** @description Group the query is tied to; its members can see and subscribe. */
+            group_id: number;
+            /** @description Short name shown in the list. */
+            name: string;
+            /** @description What the query does. */
+            description?: string | null;
+            /** @description Instruction run by the assistant. */
+            prompt: string;
+            /** @description Resource the query runs on (currently 'source'). */
+            context_type?: string;
+            /** @description Substring of an analysis service name; a completed matching analysis triggers the query. NULL for a query that is not analysis-triggered. */
+            analysis_service_match?: string | null;
+            /** @description Group ids always notified with the answer, besides the subscribers. */
+            notify_groups?: {
+                [key: string]: unknown;
+            } | null;
+            /** @description Whether the query runs. */
+            active?: boolean;
+            /** @description Run but notify no one (validation mode). */
+            dry_run?: boolean;
+        };
+        SingleAssistantQueryNoID: {
+            /** @enum {string} */
+            status: "success";
+            message?: string;
+            data?: components["schemas"]["AssistantQueryNoID"];
+        };
+        ArrayOfAssistantQueryNoIDs: {
+            /** @enum {string} */
+            status: "success";
+            message?: string;
+            data?: components["schemas"]["AssistantQueryNoID"][];
+        };
+        AssistantQuerySubscription: {
+            /** @description The query subscribed to. */
+            readonly query?: components["schemas"]["AssistantQuery"];
+            /** @description The subscribing user. */
+            readonly user?: components["schemas"]["User"];
+            /** @description The query subscribed to. */
+            query_id: number;
+            /** @description The subscribing user. */
+            user_id: number;
+            /** @description Unique object identifier. */
+            id?: number;
+        };
+        SingleAssistantQuerySubscription: {
+            /** @enum {string} */
+            status: "success";
+            message?: string;
+            data?: components["schemas"]["AssistantQuerySubscription"];
+        };
+        ArrayOfAssistantQuerySubscriptions: {
+            /** @enum {string} */
+            status: "success";
+            message?: string;
+            data?: components["schemas"]["AssistantQuerySubscription"][];
+        };
+        AssistantQuerySubscriptionNoID: {
+            /** @description The query subscribed to. */
+            readonly query?: components["schemas"]["AssistantQuery"];
+            /** @description The subscribing user. */
+            readonly user?: components["schemas"]["User"];
+            /** @description The query subscribed to. */
+            query_id: number;
+            /** @description The subscribing user. */
+            user_id: number;
+        };
+        SingleAssistantQuerySubscriptionNoID: {
+            /** @enum {string} */
+            status: "success";
+            message?: string;
+            data?: components["schemas"]["AssistantQuerySubscriptionNoID"];
+        };
+        ArrayOfAssistantQuerySubscriptionNoIDs: {
+            /** @enum {string} */
+            status: "success";
+            message?: string;
+            data?: components["schemas"]["AssistantQuerySubscriptionNoID"][];
         };
         Association: {
             /** @description Unique object identifier. */
@@ -24170,6 +25373,8 @@ export interface components {
             broker_classname: "GENERICBROKER" | "LASAIRBROKER" | "BABAMULBROKER" | "BOOMBROKER" | "FINKBROKER" | "ALERCEBROKER" | "ANTARESBROKER" | "PITTGOOGLEBROKER" | "AMPELBROKER";
             /** @description Whether this broker is enabled. */
             active?: boolean;
+            /** @description Whether the ingestion service consumes this broker's stream. Separate from `active`, which only makes the connection usable on demand. */
+            ingest?: boolean;
             /** @description Whether this broker is the one the source page's alert search targets. */
             default_alert_search?: boolean;
             /** @description Whether this broker is the one cross-matches (cone searches) target. */
@@ -24208,6 +25413,10 @@ export interface components {
             topic_filter_ids?: {
                 [key: string]: unknown;
             };
+            /** @description Per topic, what the ingestion loop last saw of it: whether its alerts can be ingested and, when they cannot, why. A topic absent from here has had nothing consumed from it yet. Shown on the pages of the filters the topic feeds. */
+            topic_status?: {
+                [key: string]: unknown;
+            };
             /** @description The credentials themselves: the upstream API token and any stream username/password. Never serialized back to a client. */
             _altdata?: string | null;
             /** @description Unique object identifier. */
@@ -24240,6 +25449,10 @@ export interface components {
             topic_filter_ids?: {
                 [key: string]: unknown;
             };
+            /** @description Per topic, what the ingestion loop last saw of it: whether its alerts can be ingested and, when they cannot, why. A topic absent from here has had nothing consumed from it yet. Shown on the pages of the filters the topic feeds. */
+            topic_status?: {
+                [key: string]: unknown;
+            };
             /** @description The credentials themselves: the upstream API token and any stream username/password. Never serialized back to a client. */
             _altdata?: string | null;
         };
@@ -24266,6 +25479,8 @@ export interface components {
             broker_classname: "GENERICBROKER" | "LASAIRBROKER" | "BABAMULBROKER" | "BOOMBROKER" | "FINKBROKER" | "ALERCEBROKER" | "ANTARESBROKER" | "PITTGOOGLEBROKER" | "AMPELBROKER";
             /** @description Whether this broker is enabled. */
             active?: boolean;
+            /** @description Whether the ingestion service consumes this broker's stream. Separate from `active`, which only makes the connection usable on demand. */
+            ingest?: boolean;
             /** @description Whether this broker is the one the source page's alert search targets. */
             default_alert_search?: boolean;
             /** @description Whether this broker is the one cross-matches (cone searches) target. */
@@ -25759,6 +26974,216 @@ export interface components {
             message?: string;
             data?: components["schemas"]["DefaultSurveyEfficiencyRequestNoID"][];
         };
+        Deployment: {
+            /** @description SkyPortal version string */
+            version: string;
+            /** @description Git log entry of the deployed commit (see `utils.gitlog.parse_gitlog`) */
+            commit?: {
+                [key: string]: unknown;
+            } | null;
+            /** @description Unique object identifier. */
+            id?: number;
+        };
+        SingleDeployment: {
+            /** @enum {string} */
+            status: "success";
+            message?: string;
+            data?: components["schemas"]["Deployment"];
+        };
+        ArrayOfDeployments: {
+            /** @enum {string} */
+            status: "success";
+            message?: string;
+            data?: components["schemas"]["Deployment"][];
+        };
+        DeploymentNoID: {
+            /** @description SkyPortal version string */
+            version: string;
+            /** @description Git log entry of the deployed commit (see `utils.gitlog.parse_gitlog`) */
+            commit?: {
+                [key: string]: unknown;
+            } | null;
+        };
+        SingleDeploymentNoID: {
+            /** @enum {string} */
+            status: "success";
+            message?: string;
+            data?: components["schemas"]["DeploymentNoID"];
+        };
+        ArrayOfDeploymentNoIDs: {
+            /** @enum {string} */
+            status: "success";
+            message?: string;
+            data?: components["schemas"]["DeploymentNoID"][];
+        };
+        Discussion: {
+            /** @description The User who started the discussion. */
+            readonly creator?: components["schemas"]["User"];
+            /** @description Group whose members take part, if any. */
+            readonly group?: components["schemas"]["Group"];
+            readonly members?: components["schemas"]["DiscussionMember"][];
+            readonly messages?: components["schemas"]["DiscussionMessage"][];
+            /** @description Name of the discussion, NULL for a direct message. */
+            name?: string | null;
+            /** @description Whether this is a direct message between two users. */
+            is_direct?: boolean;
+            /** @description ID of the User who started the discussion. */
+            creator_id?: number | null;
+            /** @description Group whose members all take part in the discussion, if any. */
+            group_id?: number | null;
+            /** @description Unique object identifier. */
+            id?: number;
+        };
+        SingleDiscussion: {
+            /** @enum {string} */
+            status: "success";
+            message?: string;
+            data?: components["schemas"]["Discussion"];
+        };
+        ArrayOfDiscussions: {
+            /** @enum {string} */
+            status: "success";
+            message?: string;
+            data?: components["schemas"]["Discussion"][];
+        };
+        DiscussionMember: {
+            /** @description The Discussion. */
+            readonly discussion?: components["schemas"]["Discussion"];
+            /** @description The member. */
+            readonly user?: components["schemas"]["User"];
+            /** @description ID of the Discussion. */
+            discussion_id: number;
+            /** @description ID of the member. */
+            user_id: number;
+            /**
+             * Format: date-time
+             * @description When the member last read the discussion.
+             */
+            last_read_at?: string | null;
+            /** @description Whether the member is notified of new messages. */
+            muted?: boolean;
+            /** @description Unique object identifier. */
+            id?: number;
+        };
+        SingleDiscussionMember: {
+            /** @enum {string} */
+            status: "success";
+            message?: string;
+            data?: components["schemas"]["DiscussionMember"];
+        };
+        ArrayOfDiscussionMembers: {
+            /** @enum {string} */
+            status: "success";
+            message?: string;
+            data?: components["schemas"]["DiscussionMember"][];
+        };
+        DiscussionMemberNoID: {
+            /** @description The Discussion. */
+            readonly discussion?: components["schemas"]["Discussion"];
+            /** @description The member. */
+            readonly user?: components["schemas"]["User"];
+            /** @description ID of the Discussion. */
+            discussion_id: number;
+            /** @description ID of the member. */
+            user_id: number;
+            /**
+             * Format: date-time
+             * @description When the member last read the discussion.
+             */
+            last_read_at?: string | null;
+            /** @description Whether the member is notified of new messages. */
+            muted?: boolean;
+        };
+        SingleDiscussionMemberNoID: {
+            /** @enum {string} */
+            status: "success";
+            message?: string;
+            data?: components["schemas"]["DiscussionMemberNoID"];
+        };
+        ArrayOfDiscussionMemberNoIDs: {
+            /** @enum {string} */
+            status: "success";
+            message?: string;
+            data?: components["schemas"]["DiscussionMemberNoID"][];
+        };
+        DiscussionMessage: {
+            /** @description The Discussion. */
+            readonly discussion?: components["schemas"]["Discussion"];
+            /** @description The User who wrote the message. */
+            readonly author?: components["schemas"]["User"];
+            /** @description ID of the Discussion. */
+            discussion_id: number;
+            /** @description ID of the User who wrote the message. */
+            author_id: number;
+            /** @description Message body. */
+            text: string;
+            /** @description Unique object identifier. */
+            id?: number;
+        };
+        SingleDiscussionMessage: {
+            /** @enum {string} */
+            status: "success";
+            message?: string;
+            data?: components["schemas"]["DiscussionMessage"];
+        };
+        ArrayOfDiscussionMessages: {
+            /** @enum {string} */
+            status: "success";
+            message?: string;
+            data?: components["schemas"]["DiscussionMessage"][];
+        };
+        DiscussionMessageNoID: {
+            /** @description The Discussion. */
+            readonly discussion?: components["schemas"]["Discussion"];
+            /** @description The User who wrote the message. */
+            readonly author?: components["schemas"]["User"];
+            /** @description ID of the Discussion. */
+            discussion_id: number;
+            /** @description ID of the User who wrote the message. */
+            author_id: number;
+            /** @description Message body. */
+            text: string;
+        };
+        SingleDiscussionMessageNoID: {
+            /** @enum {string} */
+            status: "success";
+            message?: string;
+            data?: components["schemas"]["DiscussionMessageNoID"];
+        };
+        ArrayOfDiscussionMessageNoIDs: {
+            /** @enum {string} */
+            status: "success";
+            message?: string;
+            data?: components["schemas"]["DiscussionMessageNoID"][];
+        };
+        DiscussionNoID: {
+            /** @description The User who started the discussion. */
+            readonly creator?: components["schemas"]["User"];
+            /** @description Group whose members take part, if any. */
+            readonly group?: components["schemas"]["Group"];
+            readonly members?: components["schemas"]["DiscussionMember"][];
+            readonly messages?: components["schemas"]["DiscussionMessage"][];
+            /** @description Name of the discussion, NULL for a direct message. */
+            name?: string | null;
+            /** @description Whether this is a direct message between two users. */
+            is_direct?: boolean;
+            /** @description ID of the User who started the discussion. */
+            creator_id?: number | null;
+            /** @description Group whose members all take part in the discussion, if any. */
+            group_id?: number | null;
+        };
+        SingleDiscussionNoID: {
+            /** @enum {string} */
+            status: "success";
+            message?: string;
+            data?: components["schemas"]["DiscussionNoID"];
+        };
+        ArrayOfDiscussionNoIDs: {
+            /** @enum {string} */
+            status: "success";
+            message?: string;
+            data?: components["schemas"]["DiscussionNoID"][];
+        };
         EarthquakeEvent: {
             /** @description The user that saved this EarthquakeEvent */
             readonly sent_by?: components["schemas"]["User"];
@@ -26384,6 +27809,116 @@ export interface components {
             status: "success";
             message?: string;
             data?: components["schemas"]["FacilityTransactionRequestNoID"][];
+        };
+        Feedback: {
+            /** @description The User who wrote the message */
+            readonly author?: components["schemas"]["User"];
+            /** @description The admin working on the message */
+            readonly assignee?: components["schemas"]["User"];
+            readonly replies?: components["schemas"]["FeedbackReply"][];
+            /** @description ID of the User who wrote the message */
+            author_id: number;
+            /** @description Kind of message: bug, change or other */
+            category: string;
+            /** @description The message */
+            text: string;
+            /** @description Whether an admin has handled the message */
+            resolved?: boolean;
+            /** @description ID of the admin working on the message */
+            assignee_id?: number | null;
+            /** @description Unique object identifier. */
+            id?: number;
+        };
+        SingleFeedback: {
+            /** @enum {string} */
+            status: "success";
+            message?: string;
+            data?: components["schemas"]["Feedback"];
+        };
+        ArrayOfFeedbacks: {
+            /** @enum {string} */
+            status: "success";
+            message?: string;
+            data?: components["schemas"]["Feedback"][];
+        };
+        FeedbackNoID: {
+            /** @description The User who wrote the message */
+            readonly author?: components["schemas"]["User"];
+            /** @description The admin working on the message */
+            readonly assignee?: components["schemas"]["User"];
+            readonly replies?: components["schemas"]["FeedbackReply"][];
+            /** @description ID of the User who wrote the message */
+            author_id: number;
+            /** @description Kind of message: bug, change or other */
+            category: string;
+            /** @description The message */
+            text: string;
+            /** @description Whether an admin has handled the message */
+            resolved?: boolean;
+            /** @description ID of the admin working on the message */
+            assignee_id?: number | null;
+        };
+        SingleFeedbackNoID: {
+            /** @enum {string} */
+            status: "success";
+            message?: string;
+            data?: components["schemas"]["FeedbackNoID"];
+        };
+        ArrayOfFeedbackNoIDs: {
+            /** @enum {string} */
+            status: "success";
+            message?: string;
+            data?: components["schemas"]["FeedbackNoID"][];
+        };
+        FeedbackReply: {
+            /** @description The message replied to */
+            readonly feedback?: components["schemas"]["Feedback"];
+            /** @description The admin who replied */
+            readonly author?: components["schemas"]["User"];
+            /** @description ID of the message replied to */
+            feedback_id: number;
+            /** @description ID of the admin who replied */
+            author_id: number;
+            /** @description The reply */
+            text: string;
+            /** @description Unique object identifier. */
+            id?: number;
+        };
+        SingleFeedbackReply: {
+            /** @enum {string} */
+            status: "success";
+            message?: string;
+            data?: components["schemas"]["FeedbackReply"];
+        };
+        ArrayOfFeedbackReplys: {
+            /** @enum {string} */
+            status: "success";
+            message?: string;
+            data?: components["schemas"]["FeedbackReply"][];
+        };
+        FeedbackReplyNoID: {
+            /** @description The message replied to */
+            readonly feedback?: components["schemas"]["Feedback"];
+            /** @description The admin who replied */
+            readonly author?: components["schemas"]["User"];
+            /** @description ID of the message replied to */
+            feedback_id: number;
+            /** @description ID of the admin who replied */
+            author_id: number;
+            /** @description The reply */
+            text: string;
+        };
+        SingleFeedbackReplyNoID: {
+            /** @enum {string} */
+            status: "success";
+            message?: string;
+            data?: components["schemas"]["FeedbackReplyNoID"];
+        };
+        ArrayOfFeedbackReplyNoIDs: {
+            /** @enum {string} */
+            status: "success";
+            message?: string;
+            data?: components["schemas"]["FeedbackReplyNoID"][];
         };
         Filter: {
             /** @description The Filter's Stream. */
@@ -28039,6 +29574,8 @@ export interface components {
              * @enum {string}
              */
             status?: "pending" | "accepted" | "declined";
+            /** @description Why the User wants to join the group */
+            message?: string | null;
             /** @description Unique object identifier. */
             id?: number;
         };
@@ -28068,6 +29605,8 @@ export interface components {
              * @enum {string}
              */
             status?: "pending" | "accepted" | "declined";
+            /** @description Why the User wants to join the group */
+            message?: string | null;
         };
         SingleGroupAdmissionRequestNoID: {
             /** @enum {string} */
@@ -36438,6 +37977,8 @@ export interface components {
             enable_sharing_with_hermes?: boolean;
             /** @description Whether to enable publishing to TNS or not. */
             enable_sharing_with_tns?: boolean;
+            /** @description Whether to enable publishing to TROVE or not. */
+            enable_sharing_with_trove?: boolean;
             /** @description Name of the TNS bot. */
             tns_bot_name?: string | null;
             /** @description ID of the TNS bot. */
@@ -36448,6 +37989,7 @@ export interface components {
             /** @description Whether to publish objects that already exist in TNS but not reported under this internal name (e.g., reported by another survey). */
             publish_existing_tns_objects?: boolean | null;
             _mpc_altdata?: string | null;
+            _trove_altdata?: string | null;
             /** @description Unique object identifier. */
             id?: number;
         };
@@ -36517,6 +38059,7 @@ export interface components {
             auto_share_to_tns?: boolean;
             auto_share_to_hermes?: boolean;
             auto_share_to_mpc?: boolean;
+            auto_share_to_trove?: boolean;
             auto_sharing_allow_bots?: boolean;
             /** @description Unique object identifier. */
             id?: number;
@@ -36585,6 +38128,7 @@ export interface components {
             auto_share_to_tns?: boolean;
             auto_share_to_hermes?: boolean;
             auto_share_to_mpc?: boolean;
+            auto_share_to_trove?: boolean;
             auto_sharing_allow_bots?: boolean;
         };
         SingleSharingServiceGroupNoID: {
@@ -36619,6 +38163,8 @@ export interface components {
             enable_sharing_with_hermes?: boolean;
             /** @description Whether to enable publishing to TNS or not. */
             enable_sharing_with_tns?: boolean;
+            /** @description Whether to enable publishing to TROVE or not. */
+            enable_sharing_with_trove?: boolean;
             /** @description Name of the TNS bot. */
             tns_bot_name?: string | null;
             /** @description ID of the TNS bot. */
@@ -36629,6 +38175,7 @@ export interface components {
             /** @description Whether to publish objects that already exist in TNS but not reported under this internal name (e.g., reported by another survey). */
             publish_existing_tns_objects?: boolean | null;
             _mpc_altdata?: string | null;
+            _trove_altdata?: string | null;
         };
         SingleSharingServiceNoID: {
             /** @enum {string} */
@@ -36690,6 +38237,18 @@ export interface components {
             hermes_status?: string | null;
             /** @description Serialized HTTP response from Hermes. */
             hermes_response?: {
+                [key: string]: unknown;
+            } | null;
+            /** @description Whether to publish to TROVE or not. */
+            publish_to_trove?: boolean;
+            /** @description Status of the TROVE submission. */
+            trove_status?: string | null;
+            /** @description Serialized HTTP response from TROVE. */
+            trove_response?: {
+                [key: string]: unknown;
+            } | null;
+            /** @description Payload published to TROVE. */
+            trove_payload?: {
                 [key: string]: unknown;
             } | null;
             /** @description Whether this is an archival submission or not. */
@@ -36769,6 +38328,18 @@ export interface components {
             hermes_status?: string | null;
             /** @description Serialized HTTP response from Hermes. */
             hermes_response?: {
+                [key: string]: unknown;
+            } | null;
+            /** @description Whether to publish to TROVE or not. */
+            publish_to_trove?: boolean;
+            /** @description Status of the TROVE submission. */
+            trove_status?: string | null;
+            /** @description Serialized HTTP response from TROVE. */
+            trove_response?: {
+                [key: string]: unknown;
+            } | null;
+            /** @description Payload published to TROVE. */
+            trove_payload?: {
                 [key: string]: unknown;
             } | null;
             /** @description Whether this is an archival submission or not. */
@@ -38723,6 +40294,11 @@ export interface components {
             survey?: string | null;
             /** @description ID of the thumbnail's obj. */
             obj_id: string;
+            /**
+             * Format: date-time
+             * @description UTC time of the alert observation the cutout comes from; NULL for archival thumbnails and when unknown.
+             */
+            observed_at?: string | null;
             /** @description Whether the thumbnail is (mostly) grayscale. NULL until a remote (public_url-only) thumbnail is classified by the thumbnail_queue service. */
             is_grayscale?: boolean | null;
             /** @description Unique object identifier. */
@@ -38758,6 +40334,11 @@ export interface components {
             survey?: string | null;
             /** @description ID of the thumbnail's obj. */
             obj_id: string;
+            /**
+             * Format: date-time
+             * @description UTC time of the alert observation the cutout comes from; NULL for archival thumbnails and when unknown.
+             */
+            observed_at?: string | null;
             /** @description Whether the thumbnail is (mostly) grayscale. NULL until a remote (public_url-only) thumbnail is classified by the thumbnail_queue service. */
             is_grayscale?: boolean | null;
         };
@@ -40228,6 +41809,18 @@ export interface components {
              * @default null
              */
             autosave: boolean | null;
+            /**
+             * Comment
+             * @description Why this version was made, shown in the filter's version history.
+             * @default null
+             */
+            comment: string | null;
+            /**
+             * Set As Active
+             * @description Make the new version the active one. On an active filter, the switch happens once that version passes validation, and the current version keeps running until then.
+             * @default false
+             */
+            set_as_active: boolean;
         };
         /**
          * BrokerFiltersPatchBody
@@ -40246,6 +41839,18 @@ export interface components {
              * @default null
              */
             active_fid: (number | string) | null;
+            /**
+             * Previous Active Fid
+             * @description Active version before this change, as the client last saw it. Read from the broker when omitted.
+             * @default null
+             */
+            previous_active_fid: (number | string) | null;
+            /**
+             * Previous Active
+             * @description Whether the filter was active before this change, as the client last saw it. Read from the broker when omitted.
+             * @default null
+             */
+            previous_active: boolean | null;
             /**
              * Autoannotate
              * @description Whether to auto-annotate on filter passage.
@@ -40294,6 +41899,18 @@ export interface components {
              * @default null
              */
             autoFollowupDefaultId: (number | string) | null;
+            /**
+             * Fid
+             * @description Filter version (fid) that `comment` applies to.
+             * @default null
+             */
+            fid: string | null;
+            /**
+             * Comment
+             * @description Comment on version `fid`, shown in the filter's version history. Null or empty string clears it.
+             * @default null
+             */
+            comment: string | null;
         };
         /**
          * BrokerSaveBody
@@ -40338,6 +41955,12 @@ export interface components {
              */
             active: boolean;
             /**
+             * Ingest
+             * @description Have the ingestion service consume this broker's stream.
+             * @default false
+             */
+            ingest: boolean;
+            /**
              * Default Alert Search
              * @description Make this the broker the source page searches alerts on.
              * @default false
@@ -40373,6 +41996,12 @@ export interface components {
              * @default null
              */
             active: boolean | null;
+            /**
+             * Ingest
+             * @description Have the ingestion service consume this broker's stream.
+             * @default null
+             */
+            ingest: boolean | null;
             /**
              * Altdata
              * @description Endpoints/credentials for this broker instance.
@@ -42124,6 +43753,90 @@ export interface components {
             references_only: boolean;
         };
         /**
+         * TrackDetection
+         * @description One detection in a linked track, as the linker reports it.
+         */
+        TrackDetection: {
+            /**
+             * Candid
+             * @description Alert id the cutouts are keyed on.
+             */
+            candid: string | number;
+            /**
+             * Jd
+             * @description Julian date of the detection.
+             */
+            jd: number;
+            /**
+             * Ra
+             * @description Right ascension in degrees.
+             */
+            ra: number;
+            /**
+             * Dec
+             * @description Declination in degrees.
+             */
+            dec: number;
+            /**
+             * Mag
+             * @description Reported magnitude.
+             * @default null
+             */
+            mag: number | null;
+            /**
+             * Band
+             * @description Filter the detection is in.
+             * @default null
+             */
+            band: string | null;
+        };
+        /**
+         * MovingObjectTrackPostBody
+         * @description Request body for measuring a linked track from its cutouts.
+         */
+        MovingObjectTrackPostBody: {
+            /**
+             * Detections
+             * @description The track's detections. Not keyed on obj_id: a moving object gets a new one almost every epoch, which is the whole problem.
+             */
+            detections: components["schemas"]["TrackDetection"][];
+            /**
+             * Broker Id
+             * @description Broker to fetch the cutouts from.
+             */
+            broker_id: number;
+            /**
+             * Survey
+             * @description Survey the alerts are from.
+             * @default ZTF
+             */
+            survey: string;
+            /**
+             * Cutout
+             * @description Which cutout to measure. Only the difference image is meaningful for a moving object.
+             * @default cutoutDifference
+             */
+            cutout: string;
+            /**
+             * Include Images
+             * @description Render each epoch as a PNG stretched to its own background. Off returns the numbers alone.
+             * @default true
+             */
+            include_images: boolean;
+            /**
+             * Check Known
+             * @description Ask JPL whether the track is an already-known small body. Costs a few queries, and reports a negative only when a control observation proves the query path still works.
+             * @default false
+             */
+            check_known: boolean;
+            /**
+             * Measure Cutouts
+             * @description Measure each epoch's pixels. Off returns the geometry alone, which needs no cutouts and so no broker call: a scanning page can show it for every candidate, where measuring cannot.
+             * @default true
+             */
+            measure_cutouts: boolean;
+        };
+        /**
          * EarthquakePostBody
          * @description Request body for ingesting an earthquake event, either from a QuakeML
          *     xml document or from explicit event properties.
@@ -43303,6 +45016,12 @@ export interface components {
              * @description ID of the user requesting admission
              */
             userID: number;
+            /**
+             * Message
+             * @description Why the user wants to join the group
+             * @default null
+             */
+            message: string | null;
         };
         /**
          * GroupAdmissionRequestPostResponse
@@ -46973,6 +48692,631 @@ export interface components {
             remove_obj_ids: string[] | null;
         };
         /**
+         * DeploymentResponse
+         * @description One version of the code that started serving the instance.
+         */
+        DeploymentResponse: {
+            /** Id */
+            id: number;
+            /** Version */
+            version: string;
+            /** @default null */
+            commit: components["schemas"]["GitLogEntryResponse"];
+            /**
+             * Created At
+             * Format: date-time
+             * @description When this version started (UTC)
+             */
+            created_at: string;
+            /**
+             * Changes
+             * @description Commits brought over the previous deployment, newest first (capped); null when either commit is not in the running git log
+             * @default null
+             */
+            changes: components["schemas"]["GitLogEntryResponse"][] | null;
+            /**
+             * N Changes
+             * @default null
+             */
+            n_changes: number | null;
+            /**
+             * Rollback
+             * @description Whether this deployed an older commit
+             * @default false
+             */
+            rollback: boolean;
+        };
+        /**
+         * GitLogEntryResponse
+         * @description One parsed commit from the deployed SkyPortal git log.
+         */
+        GitLogEntryResponse: {
+            /**
+             * Time
+             * @default null
+             */
+            time: string | null;
+            /**
+             * Sha
+             * @default null
+             */
+            sha: string | null;
+            /**
+             * Email
+             * @default null
+             */
+            email: string | null;
+            /**
+             * Description
+             * @default null
+             */
+            description: string | null;
+            /**
+             * Pr Nr
+             * @default null
+             */
+            pr_nr: string | null;
+            /**
+             * Pr Url
+             * @default null
+             */
+            pr_url: string | null;
+            /**
+             * Commit Url
+             * @default null
+             */
+            commit_url: string | null;
+            /**
+             * Name
+             * @default null
+             */
+            name: string | null;
+        };
+        /**
+         * HostResourcesResponse
+         * @description CPU, memory and disk of the instance host (the node, in a container).
+         */
+        HostResourcesResponse: {
+            /**
+             * Cpu Count
+             * @default null
+             */
+            cpu_count: number | null;
+            /**
+             * Load Average
+             * @default null
+             */
+            load_average: number[] | null;
+            /**
+             * Memory Total
+             * @default null
+             */
+            memory_total: number | null;
+            /**
+             * Memory Available
+             * @default null
+             */
+            memory_available: number | null;
+            /**
+             * Disk Total
+             * @default null
+             */
+            disk_total: number | null;
+            /**
+             * Disk Free
+             * @default null
+             */
+            disk_free: number | null;
+        };
+        /**
+         * InstanceSystemResponse
+         * @description Host, database and service details, only returned to system admins.
+         */
+        InstanceSystemResponse: {
+            /** Hostname */
+            hostname: string;
+            /** Platform */
+            platform: string;
+            /** Python Version */
+            python_version: string;
+            /** Packages */
+            packages?: {
+                [key: string]: string;
+            };
+            /**
+             * Supervisor Available
+             * @default false
+             */
+            supervisor_available: boolean;
+            /** Services */
+            services?: components["schemas"]["ServiceResponse"][];
+            /** @default null */
+            resources: components["schemas"]["HostResourcesResponse"];
+            /**
+             * Database Name
+             * @default null
+             */
+            database_name: string | null;
+            /**
+             * Postgres Version
+             * @default null
+             */
+            postgres_version: string | null;
+            /**
+             * Database Size
+             * @default null
+             */
+            database_size: string | null;
+            /**
+             * Migration
+             * @default null
+             */
+            migration: string | null;
+        };
+        /**
+         * ServiceResponse
+         * @description A service of the instance and the processes supervisor runs for it.
+         */
+        ServiceResponse: {
+            /** Name */
+            name: string;
+            /**
+             * Status
+             * @description `disabled` in `services.disabled`; `not_configured` when enabled but supervisor runs no program for it, as its template only defines one when the config calls for the service
+             * @enum {string}
+             */
+            status: "enabled" | "disabled" | "not_configured";
+            /** Processes */
+            processes?: components["schemas"]["SupervisorProcessResponse"][];
+        };
+        /**
+         * SupervisorProcessResponse
+         * @description A process run by supervisor on the instance host.
+         */
+        SupervisorProcessResponse: {
+            /** Name */
+            name: string;
+            /** Group */
+            group: string;
+            /** State */
+            state: string;
+            /**
+             * Pid
+             * @default null
+             */
+            pid: number | null;
+            /**
+             * Memory
+             * @description Proportional memory of the service process and its children, in bytes
+             * @default null
+             */
+            memory: number | null;
+            /**
+             * Started At
+             * Format: date-time
+             * @default null
+             */
+            started_at: string | null;
+        };
+        /**
+         * DeploymentsResponse
+         * @description Running version and deployment history of the instance.
+         */
+        DeploymentsResponse: {
+            /** Title */
+            title: string;
+            /** Version */
+            version: string;
+            /** @default null */
+            commit: components["schemas"]["GitLogEntryResponse"];
+            /**
+             * Started At
+             * Format: date-time
+             * @description When this app process started (UTC)
+             */
+            started_at: string;
+            /**
+             * Deployed At
+             * Format: date-time
+             * @default null
+             */
+            deployed_at: string | null;
+            /** Deployments */
+            deployments?: components["schemas"]["DeploymentResponse"][];
+            /** @default null */
+            system: components["schemas"]["InstanceSystemResponse"];
+        };
+        /**
+         * FeedbackAuthorResponse
+         * @description The user who wrote a message or a reply.
+         */
+        FeedbackAuthorResponse: {
+            /** Id */
+            id: number;
+            /** Username */
+            username: string;
+            /**
+             * First Name
+             * @default null
+             */
+            first_name: string | null;
+            /**
+             * Last Name
+             * @default null
+             */
+            last_name: string | null;
+            /**
+             * Gravatar Url
+             * @default null
+             */
+            gravatar_url: string | null;
+        };
+        /**
+         * FeedbackReplyResponse
+         * @description An admin's reply to a message.
+         */
+        FeedbackReplyResponse: {
+            /** Id */
+            id: number;
+            /** Text */
+            text: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            author: components["schemas"]["FeedbackAuthorResponse"];
+        };
+        /**
+         * FeedbackResponse
+         * @description A message left to the admins, with their replies.
+         */
+        FeedbackResponse: {
+            /** Id */
+            id: number;
+            /**
+             * Category
+             * @enum {string}
+             */
+            category: "bug" | "change" | "other";
+            /** Text */
+            text: string;
+            /** Resolved */
+            resolved: boolean;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            author: components["schemas"]["FeedbackAuthorResponse"];
+            /** @default null */
+            assignee: components["schemas"]["FeedbackAuthorResponse"];
+            /** Replies */
+            replies?: components["schemas"]["FeedbackReplyResponse"][];
+        };
+        /**
+         * FeedbackListResponse
+         * @description The messages the requesting user can read: their own, or all for admins.
+         */
+        FeedbackListResponse: {
+            /** Messages */
+            messages?: components["schemas"]["FeedbackResponse"][];
+        };
+        /**
+         * FeedbackPostBody
+         * @description Request body for leaving a message to the admins.
+         */
+        FeedbackPostBody: {
+            /**
+             * Category
+             * @description bug report, change request, or other
+             * @enum {string}
+             */
+            category: "bug" | "change" | "other";
+            /**
+             * Text
+             * @description The message
+             */
+            text: string;
+        };
+        /**
+         * FeedbackPatchBody
+         * @description Request body for marking a message as handled, or assigning it to an admin.
+         */
+        FeedbackPatchBody: {
+            /**
+             * Resolved
+             * @default null
+             */
+            resolved: boolean | null;
+            /**
+             * Assignee Id
+             * @description ID of the admin working on it; null to unassign
+             * @default null
+             */
+            assignee_id: number | null;
+        };
+        /**
+         * FeedbackReplyPostBody
+         * @description Request body for an admin replying to a message.
+         */
+        FeedbackReplyPostBody: {
+            /**
+             * Text
+             * @description The reply
+             */
+            text: string;
+        };
+        /**
+         * DiscussionGroupResponse
+         * @description The group whose members take part in a discussion.
+         */
+        DiscussionGroupResponse: {
+            /** Id */
+            id: number;
+            /** Name */
+            name: string;
+        };
+        /**
+         * DiscussionMessageResponse
+         * @description A message of a discussion.
+         */
+        DiscussionMessageResponse: {
+            /** Id */
+            id: number;
+            /** Discussion Id */
+            discussion_id: number;
+            /** Text */
+            text: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Modified
+             * Format: date-time
+             */
+            modified: string;
+            author: components["schemas"]["DiscussionUserResponse"];
+        };
+        /**
+         * DiscussionResponse
+         * @description A discussion, as seen by the requesting user.
+         */
+        DiscussionResponse: {
+            /** Id */
+            id: number;
+            /**
+             * Name
+             * @default null
+             */
+            name: string | null;
+            /** Is Direct */
+            is_direct: boolean;
+            /**
+             * Creator Id
+             * @default null
+             */
+            creator_id: number | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** @default null */
+            group: components["schemas"]["DiscussionGroupResponse"];
+            /**
+             * Members
+             * @description Chosen members; empty for a group discussion.
+             */
+            members?: components["schemas"]["DiscussionUserResponse"][];
+            /** Member Count */
+            member_count: number;
+            /** Muted */
+            muted: boolean;
+            /** Unread */
+            unread: number;
+            /** @default null */
+            last_message: components["schemas"]["DiscussionMessageResponse"];
+        };
+        /**
+         * DiscussionUserResponse
+         * @description A user taking part in a discussion.
+         */
+        DiscussionUserResponse: {
+            /** Id */
+            id: number;
+            /** Username */
+            username: string;
+            /**
+             * First Name
+             * @default null
+             */
+            first_name: string | null;
+            /**
+             * Last Name
+             * @default null
+             */
+            last_name: string | null;
+            /**
+             * Gravatar Url
+             * @default null
+             */
+            gravatar_url: string | null;
+            /**
+             * Is Bot
+             * @default false
+             */
+            is_bot: boolean;
+        };
+        /**
+         * DiscussionListResponse
+         * @description The discussions the requesting user takes part in, latest activity first.
+         */
+        DiscussionListResponse: {
+            /** Discussions */
+            discussions?: components["schemas"]["DiscussionResponse"][];
+        };
+        /**
+         * DiscussionPostBody
+         * @description Request body for starting a discussion.
+         */
+        DiscussionPostBody: {
+            /**
+             * Direct
+             * @description Open (or reopen) a direct message with the single user in user_ids.
+             * @default false
+             */
+            direct: boolean;
+            /**
+             * User Ids
+             * @description Users to talk with.
+             */
+            user_ids?: number[];
+            /**
+             * Group Id
+             * @description Group whose members all take part, instead of chosen users.
+             * @default null
+             */
+            group_id: number | null;
+            /**
+             * Name
+             * @default null
+             */
+            name: string | null;
+        };
+        /**
+         * DiscussionPostResponse
+         * @description The discussion started, or the existing direct message.
+         */
+        DiscussionPostResponse: {
+            /** Id */
+            id: number;
+        };
+        /**
+         * DiscussionPatchBody
+         * @description Request body for renaming a discussion.
+         */
+        DiscussionPatchBody: {
+            /** Name */
+            name: string;
+        };
+        /**
+         * DiscussionMessageListResponse
+         * @description A page of the messages of a discussion, oldest first.
+         */
+        DiscussionMessageListResponse: {
+            /** Messages */
+            messages?: components["schemas"]["DiscussionMessageResponse"][];
+            /**
+             * Has More
+             * @description Whether older messages remain.
+             */
+            has_more: boolean;
+        };
+        /**
+         * DiscussionMessagePostBody
+         * @description Request body for sending or editing a message.
+         */
+        DiscussionMessagePostBody: {
+            /** Text */
+            text: string;
+        };
+        /**
+         * DiscussionMemberListResponse
+         * @description The users taking part in a discussion.
+         */
+        DiscussionMemberListResponse: {
+            /** Members */
+            members?: components["schemas"]["DiscussionUserResponse"][];
+        };
+        /**
+         * DiscussionMembersPostBody
+         * @description Request body for adding users to a discussion.
+         */
+        DiscussionMembersPostBody: {
+            /** User Ids */
+            user_ids: number[];
+        };
+        /**
+         * DiscussionMembershipPatchBody
+         * @description Request body for the requesting user's own state in a discussion.
+         */
+        DiscussionMembershipPatchBody: {
+            /**
+             * Muted
+             * @description Stop or resume notifications for this discussion.
+             * @default null
+             */
+            muted: boolean | null;
+            /**
+             * Read
+             * @description Mark every message as read.
+             * @default null
+             */
+            read: boolean | null;
+        };
+        /**
+         * CommentThreadLastCommentResponse
+         * @description The latest comment of a thread.
+         */
+        CommentThreadLastCommentResponse: {
+            /** Id */
+            id: number;
+            /** Text */
+            text: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            author: components["schemas"]["DiscussionUserResponse"];
+        };
+        /**
+         * CommentThreadResponse
+         * @description A comment thread the requesting user wrote in.
+         */
+        CommentThreadResponse: {
+            /**
+             * Resource Type
+             * @enum {string}
+             */
+            resource_type: "sources" | "gcn_event" | "earthquake" | "shift";
+            /** Resource Id */
+            resource_id: string;
+            /** Label */
+            label: string;
+            /** Url */
+            url: string;
+            /**
+             * Channel
+             * @default null
+             */
+            channel: string | null;
+            last_comment: components["schemas"]["CommentThreadLastCommentResponse"];
+            /**
+             * Dateobs
+             * @description GCN events only.
+             * @default null
+             */
+            dateobs: string | null;
+            /**
+             * Event Id
+             * @description Earthquakes only.
+             * @default null
+             */
+            event_id: string | null;
+        };
+        /**
+         * CommentThreadListResponse
+         * @description Comment threads the requesting user is involved in, latest activity first.
+         */
+        CommentThreadListResponse: {
+            /** Threads */
+            threads?: components["schemas"]["CommentThreadResponse"][];
+        };
+        /**
          * AssistantConversationPatchBody
          * @description Request body for renaming a conversation.
          */
@@ -47011,6 +49355,71 @@ export interface components {
              * @default null
              */
             context_id: string | null;
+            /**
+             * Notify
+             * @description Who to notify with the answer once it is ready, as {"users": [ids], "groups": [ids]}. The author is always notified; named recipients must share a group with the author.
+             * @default null
+             */
+            notify: {
+                [key: string]: unknown;
+            } | null;
+        };
+        /**
+         * AssistantQueryPostBody
+         * @description Request body for creating a shared assistant query.
+         */
+        AssistantQueryPostBody: {
+            /**
+             * Name
+             * @description Short name shown in the query list.
+             */
+            name: string;
+            /**
+             * Group Id
+             * @description Group the query is tied to; its members subscribe.
+             */
+            group_id: number;
+            /**
+             * Prompt
+             * @description Instruction the assistant runs.
+             */
+            prompt: string;
+            /**
+             * Description
+             * @description What the query does.
+             * @default null
+             */
+            description: string | null;
+            /**
+             * Analysis Service Match
+             * @description Substring of an analysis service name; a completed matching analysis triggers the query.
+             * @default null
+             */
+            analysis_service_match: string | null;
+            /**
+             * Notify Groups
+             * @description Group ids always notified, besides the subscribers.
+             * @default null
+             */
+            notify_groups: number[] | null;
+            /**
+             * Context Type
+             * @description Resource the query runs on.
+             * @default source
+             */
+            context_type: string;
+            /**
+             * Active
+             * @description Whether the query runs.
+             * @default true
+             */
+            active: boolean;
+            /**
+             * Dry Run
+             * @description Run but notify no one.
+             * @default false
+             */
+            dry_run: boolean;
         };
         /**
          * TaxonomyPostBody
@@ -47557,6 +49966,12 @@ export interface components {
              * @default false
              */
             publish_to_hermes: boolean | null;
+            /**
+             * Publish To Trove
+             * @description Flag to indicate if the submission should be published to TROVE
+             * @default false
+             */
+            publish_to_trove: boolean | null;
         };
         /**
          * SharingServiceCoauthorPostBody
@@ -47615,6 +50030,12 @@ export interface components {
              * @default null
              */
             auto_share_to_hermes: (boolean | string) | null;
+            /**
+             * Auto Share To Trove
+             * @description Whether to automatically publish to TROVE
+             * @default null
+             */
+            auto_share_to_trove: (boolean | string) | null;
             /**
              * Auto Sharing Allow Bots
              * @description Whether to allow bots to automatically publish
@@ -47741,6 +50162,12 @@ export interface components {
              */
             enable_sharing_with_hermes: boolean | null;
             /**
+             * Enable Sharing With Trove
+             * @description Whether to enable publishing to TROVE or not.
+             * @default null
+             */
+            enable_sharing_with_trove: boolean | null;
+            /**
              * Enable Sharing With Tns
              * @description Whether to enable publishing to TNS or not.
              * @default null
@@ -47770,6 +50197,14 @@ export interface components {
              * @default null
              */
             _tns_altdata: ({
+                [key: string]: unknown;
+            } | string) | null;
+            /**
+             * Trove Altdata
+             * @description TROVE altdata (the account username and password), as a JSON object or string.
+             * @default null
+             */
+            _trove_altdata: ({
                 [key: string]: unknown;
             } | string) | null;
             /**

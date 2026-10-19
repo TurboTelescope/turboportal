@@ -52,7 +52,7 @@ const actionButtonStyle = {
 const LINK_REGEX = /(\[[^\]]*\]\([^)]*\)|<[^\s>]+>|(?:https?:\/\/|www\.)\S+)/g;
 const MENTION_REGEX = /(?<!\w)([@#])([\w-@]+)/g;
 
-const highlightMentions = (text: string) =>
+export const highlightMentions = (text: string) =>
   text
     .split(LINK_REGEX)
     .map((chunk, index) =>
@@ -60,7 +60,7 @@ const highlightMentions = (text: string) =>
     )
     .join("");
 
-const markdownLink = ({ node, children, ...props }: any) => (
+export const markdownLink = ({ node, children, ...props }: any) => (
   <Link
     {...props}
     target="_blank"
@@ -71,6 +71,11 @@ const markdownLink = ({ node, children, ...props }: any) => (
     {children}
   </Link>
 );
+
+export const emojiSupport = (textComment: any) =>
+  textComment.value.replace(/:\w+:/gi, (name: string) =>
+    emoji.getUnicode(name) ? emoji.getUnicode(name) : name,
+  );
 
 interface CommentProps {
   resourceType?: string;
@@ -110,7 +115,7 @@ const Comment = ({
   const [editing, setEditing] = useState(false);
   const { data: spectra } = useFetchSourceSpectraQuery(
     { id: objID as string },
-    { skip: !objID },
+    { skip: !objID || !spectrum_id },
   );
   const [editCommentMutation] = useEditCommentMutation();
   const [editCommentOnGcnEvent] = useEditCommentOnGcnEventMutation();
@@ -206,11 +211,6 @@ const Comment = ({
 
     return formattedText;
   };
-
-  const emojiSupport = (textComment: any) =>
-    textComment.value.replace(/:\w+:/gi, (name: string) =>
-      emoji.getUnicode(name) ? emoji.getUnicode(name) : name,
-    );
 
   const commentMessageStyle =
     resourceType === "shift"

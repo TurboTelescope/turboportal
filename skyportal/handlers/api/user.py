@@ -31,6 +31,7 @@ from ...models import (
     UserRole,
 )
 from ..base import BaseHandler
+from .roles import includes_admin_role
 
 log = make_log("api/user")
 env, cfg = load_env()
@@ -246,7 +247,9 @@ async def add_user_and_setup_groups(
 
 class UserHandler(BaseHandler):
     def can_manage_users(self):
-        return "Manage users" in self.current_user.permissions
+        # System admin satisfies any ACL, as it does on the write side.
+        granted = self.current_user.permissions
+        return "Manage users" in granted or "System admin" in granted
 
     def can_manage_user(self, user_id):
         """Whether the requester may see a user's record beyond its public profile."""
@@ -417,6 +420,7 @@ class UserHandler(BaseHandler):
                                 "username": user.username,
                                 "first_name": user.first_name,
                                 "last_name": user.last_name,
+                                "gravatar_url": user.gravatar_url,
                                 "is_bot": user.is_bot,
                             }
                             for user in users_result.all()
@@ -488,6 +492,10 @@ class UserHandler(BaseHandler):
             contact_email = None
 
         async with self.AsyncSession() as session:
+            if not self.current_user.is_system_admin and await includes_admin_role(
+                session, role_ids
+            ):
+                return self.error("Only system admins can grant administrator roles.")
             try:
                 user_id = await add_user_and_setup_groups(
                     session=session,

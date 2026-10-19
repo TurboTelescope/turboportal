@@ -143,6 +143,74 @@ export const FEATURE_ANNOUNCEMENTS: FeatureAnnouncement[] = [
     ],
   },
   {
+    id: "source-list-cleanup",
+    path: /^\/(sources|group_sources\/[^/]+|favorites)\/?$/,
+    announcedAt: "2026-09-20",
+    steps: [
+      {
+        target: '[data-testid^="source_table_"]',
+        title: "Source tables cleaned up",
+        content:
+          "Every source table has been cleaned up, and search is fixed: it " +
+          "no longer loses focus after each letter, and it ignores case, so " +
+          "ztf finds ZTF.",
+        placement: "center",
+      },
+      {
+        target: '[data-testid="add-column-button"]',
+        title: "Annotation and altdata columns",
+        content:
+          "The column picker moved from above the table to this button. Open " +
+          "it to search any annotation or altdata field and add it as a column.",
+        placement: "bottom",
+      },
+    ],
+  },
+  {
+    id: "deployments-page",
+    path: /./,
+    announcedAt: "2026-09-30",
+    steps: [
+      {
+        target: '[data-testid="tour-nav-other"]',
+        before: async () => {
+          const other = document.querySelector(
+            '[data-testid="tour-nav-other"]',
+          );
+          if (!document.querySelector('[data-testid="tour-nav-deployments"]')) {
+            other?.querySelector<HTMLElement>('[role="button"]')?.click();
+            // wait for the menu's expand animation, so it can scroll into view
+            await new Promise((resolve) => setTimeout(resolve, 450));
+          }
+          other?.scrollIntoView({ block: "center" });
+        },
+        title: "A new page in Other",
+        content: "A new Deployments page is now available from this menu.",
+      },
+      {
+        target: '[data-testid="tour-nav-deployments"]',
+        before: async () => {
+          if (!document.querySelector('[data-testid="tour-nav-deployments"]')) {
+            document
+              .querySelector<HTMLElement>(
+                '[data-testid="tour-nav-other"] [role="button"]',
+              )
+              ?.click();
+            await new Promise((resolve) => setTimeout(resolve, 450));
+          }
+          document
+            .querySelector('[data-testid="tour-nav-deployments"]')
+            ?.scrollIntoView({ block: "nearest" });
+        },
+        title: "Deployments",
+        content:
+          "See which version of the app is running and what changed with each " +
+          "deployment. From its Feedback tab, report any issue or bug, or ask " +
+          "for new additions.",
+      },
+    ],
+  },
+  {
     id: "sharing-service-coauthor-order",
     path: /^\/sharing_services\/?$/,
     announcedAt: "2026-09-15",
@@ -155,6 +223,27 @@ export const FEATURE_ANNOUNCEMENTS: FeatureAnnouncement[] = [
           "Coauthors are listed in the order they are published in, right " +
           "after the publisher and before the acknowledgments. Drag a name to " +
           "change that order.",
+      },
+    ],
+  },
+  {
+    id: "discussions-page",
+    path: /./,
+    announcedAt: "2026-10-09",
+    steps: [
+      {
+        target: '[data-testid="tour-nav-discussions"]',
+        before: async () => {
+          document
+            .querySelector('[data-testid="tour-nav-discussions"]')
+            ?.scrollIntoView({ block: "nearest" });
+        },
+        title: "Discussions",
+        content:
+          "All your conversations in one place: direct messages, group " +
+          "discussions, and the comment threads you wrote in. Message anyone " +
+          "from their profile, and choose how you are notified in your " +
+          "notification preferences.",
       },
     ],
   },

@@ -1,6 +1,7 @@
 """Woken by the app when a message is posted, answers it through the MCP endpoint."""
 
 import json
+import re
 import time
 import uuid
 
@@ -14,9 +15,29 @@ from baselayer.app.env import load_env
 from baselayer.app.flow import Flow
 from baselayer.app.models import ACL, init_db, session_context_id
 from baselayer.log import make_log
-from skyportal.models import AssistantMessage, DBSession, Token, User
+from skyportal.models import (
+    AssistantMessage,
+    AssistantQuery,
+    Comment,
+    DBSession,
+    Filter,
+    GroupUser,
+    Token,
+    User,
+    UserNotification,
+)
 from skyportal.utils.app import get_app_base_url
-from skyportal.utils.assistant import SERVICE_TOKEN_PREFIX, build_messages, condense
+from skyportal.utils.assistant import (
+    SERVICE_TOKEN_PREFIX,
+    attempt_timeouts,
+    build_messages,
+    chat_payload,
+    condense,
+    offered_tools,
+    proposal,
+    record_call,
+)
+from skyportal.utils.assistant_triage import SKYBOT_USERNAME
 
 _, cfg = load_env()
 log = make_log("assistant")
@@ -40,6 +61,11 @@ MAX_CONTEXT = int(CONFIG.get("max_context_messages", 40))
 # next to generation, so this buys breadth for very little time.
 RESULT_BUDGET = int(CONFIG.get("result_budget", 20000))
 TIMEOUT = float(CONFIG.get("request_timeout", 300))
+# A stalled request holds the whole answer budget and the turn ends with
+# nothing. Bounding one attempt leaves room to try again inside the same
+# deadline, which is worth doing: the failures seen so far hang from the
+# first call while neighbouring turns answer in seconds.
+ATTEMPT_TIMEOUT = float(CONFIG.get("attempt_timeout", 150))
 
 
 def _rpc(token, method, params, timeout, tool_name=None):
@@ -77,14 +103,9 @@ def _rpc(token, method, params, timeout, tool_name=None):
     return payload["result"]
 
 
-def list_tools(token):
-    """The read-only tools. A tool that writes is never offered, and `call_tool`
-    refuses anything that was not."""
-    tools = [
-        tool
-        for tool in _rpc(token, "tools/list", {}, 60)["tools"]
-        if tool.get("annotations", {}).get("readOnlyHint")
-    ]
+def list_tools(token, context_type=None):
+    """The tools to offer, as the chat API wants them."""
+    tools = offered_tools(_rpc(token, "tools/list", {}, 60)["tools"], context_type)
     return [
         {
             "type": "function",
@@ -121,25 +142,45 @@ def call_tool(token, name, arguments, offered):
 
 
 def chat(messages, tools, timeout=None):
+    """One chat-completions round, retried once if the first attempt stalls."""
     headers = {"Content-Type": "application/json"}
     if API_KEY:
         headers["Authorization"] = f"Bearer {API_KEY}"
-    response = requests.post(
-        f"{BASE_URL.rstrip('/')}/chat/completions",
-        headers=headers,
-        json={
-            "model": MODEL,
-            "messages": messages,
-            "tools": tools,
-            "temperature": 0,
-            **(
-                {} if THINKING else {"chat_template_kwargs": {"enable_thinking": False}}
-            ),
-        },
-        timeout=timeout or TIMEOUT,
-    )
-    response.raise_for_status()
-    return response.json()["choices"][0]["message"]
+    payload = chat_payload(MODEL, messages, tools, THINKING)
+
+    attempts = attempt_timeouts(timeout or TIMEOUT, ATTEMPT_TIMEOUT)
+
+    last: Exception | None = None
+    for number, attempt in enumerate(attempts, start=1):
+        try:
+            response = requests.post(
+                f"{BASE_URL.rstrip('/')}/chat/completions",
+                headers=headers,
+                json=payload,
+                timeout=attempt,
+            )
+        except requests.exceptions.Timeout as exc:
+            last = exc
+            log(
+                f"model did not answer within {attempt:.0f}s "
+                f"(attempt {number} of {len(attempts)})"
+            )
+            continue
+        if response.status_code >= 400:
+            # The status alone says nothing: a refused request looks identical
+            # whether the context was too long, a tool schema was rejected or
+            # the model was unavailable, and the answer the user sees is the
+            # same sentence either way. The server's own words tell them apart.
+            log(
+                f"model refused the request: {response.status_code} "
+                f"{response.text[:600]} "
+                f"(messages={len(messages)}, tools={len(tools)}, "
+                f"payload={len(json.dumps(messages)) + len(json.dumps(tools))} chars)"
+            )
+        response.raise_for_status()
+        return response.json()["choices"][0]["message"]
+
+    raise last if last is not None else RuntimeError("no attempt was made")
 
 
 def remaining(deadline, floor=5.0):
@@ -149,9 +190,11 @@ def remaining(deadline, floor=5.0):
 
 
 def answer(conversation, context_type, context_id, user, token):
-    tools = list_tools(token)
+    """The answer, the tools it took to get there, and any filter it built."""
+    tools = list_tools(token, context_type)
     offered = {tool["function"]["name"] for tool in tools}
     messages = build_messages(conversation, MAX_CONTEXT, context_type, context_id, user)
+    trace = []
 
     deadline = time.monotonic() + ANSWER_TIMEOUT
     # One round-trip can ask for several tools at once, so count the calls
@@ -164,17 +207,20 @@ def answer(conversation, context_type, context_id, user, token):
         message = chat(messages, tools, timeout=left)
         calls = message.get("tool_calls") or []
         if not calls:
-            return (message.get("content") or "").strip()
+            return (message.get("content") or "").strip(), trace, proposal(trace)
         messages.append(message)
         calls_made += len(calls)
         for call in calls:
             name = call["function"]["name"]
+            arguments, ok = {}, True
             try:
                 arguments = json.loads(call["function"]["arguments"] or "{}")
                 result = call_tool(token, name, arguments, offered)
             except Exception as exc:
+                ok = False
                 result = f"tool {name} failed: {exc}"
                 log(result)
+            trace.append(record_call(name, arguments, result, ok))
             messages.append(
                 {
                     "role": "tool",
@@ -190,10 +236,15 @@ def answer(conversation, context_type, context_id, user, token):
         }
     )
     if (left := remaining(deadline)) is None:
-        return "I ran out of time working that out. Please ask again, or narrow the question."
+        return (
+            "I ran out of time working that out. Please ask again, or narrow the question.",
+            trace,
+            proposal(trace),
+        )
     # No tools on the last word, or the model asks for another instead of
     # answering and the reply comes back empty.
-    return (chat(messages, [], timeout=left).get("content") or "").strip()
+    text = (chat(messages, [], timeout=left).get("content") or "").strip()
+    return text, trace, proposal(trace)
 
 
 def service_token(session, user_id):
@@ -214,6 +265,30 @@ def service_token(session, user_id):
     session.add(token)
     session.commit()
     return token
+
+
+def requester_of(session, message, user):
+    match = re.fullmatch(r"query:(\d+):.+", message.channel or "")
+    if match is None or not (user.is_bot and user.username == SKYBOT_USERNAME):
+        return message.user_id
+    return session.scalar(
+        sa.select(AssistantQuery.owner_id).where(AssistantQuery.id == int(match[1]))
+    )
+
+
+def may_edit_filter(session, user_id, context_id):
+    broker_id, _, filter_id = (context_id or "").partition("/")
+    if not (broker_id.isdigit() and filter_id.isdigit()):
+        return False
+    user = session.scalar(sa.select(User).where(User.id == user_id))
+    return (
+        session.scalars(
+            Filter.select(user, mode="update").where(
+                Filter.id == int(filter_id), Filter.broker_id == int(broker_id)
+            )
+        ).first()
+        is not None
+    )
 
 
 def clear_service_tokens():
@@ -282,6 +357,107 @@ def conversation_of(session, user_id, channel, up_to_id=None):
     ]
 
 
+def _parse_urgency(answer):
+    """Pull a trailing ``NOTIFY: yes/no`` marker off a triage answer.
+
+    Returns (is_urgent, text_without_the_marker). A missing marker is treated as
+    not urgent, so a model that forgets it never spams notifications.
+    """
+    text = answer or ""
+    match = None
+    for m in re.finditer(r"(?im)^[ \t>*_-]*NOTIFY:\s*(yes|no)\b.*$", text):
+        match = m
+    if match is None:
+        return False, text.strip()
+    is_urgent = match.group(1).lower() == "yes"
+    return is_urgent, (text[: match.start()] + text[match.end() :]).strip()
+
+
+def post_triage_comment(session, author_id, notify, context_type, context_id, answer):
+    """Post the full triage as a bot comment on the source, visible to the query's
+    group(s). Only for source-scoped query runs, whose notify carries
+    ``comment_groups``; interactive chats (no comment_groups) never post.
+    """
+    if not isinstance(notify, dict):
+        return
+    group_ids = notify.get("comment_groups") or []
+    text = (answer or "").strip()
+    if not (group_ids and context_type == "source" and context_id and text):
+        return
+    author = session.scalar(sa.select(User).where(User.id == author_id))
+    groups = [group for group in author.accessible_groups if group.id in group_ids]
+    if not groups:
+        return
+    session.add(
+        Comment(
+            text=text,
+            obj_id=context_id,
+            author_id=author_id,
+            groups=list(groups),
+            bot=True,
+            origin="skybot",
+        )
+    )
+
+
+def deliver_notifications(session, author_id, notify, context_type, context_id, answer):
+    """Notify the recipients a task run named, with its answer.
+
+    Groups expand to their members; a named user must share a group with the
+    author, so a run cannot notify people outside the author's groups.
+    """
+    if not isinstance(notify, dict):
+        return
+    wanted = {int(u) for u in (notify.get("users") or [])}
+    for gid in notify.get("groups") or []:
+        wanted.update(
+            session.scalars(
+                sa.select(GroupUser.user_id).where(GroupUser.group_id == int(gid))
+            ).all()
+        )
+    wanted.discard(author_id)
+    if not wanted:
+        return
+    author = session.scalar(sa.select(User).where(User.id == author_id))
+    if author is not None and author.is_bot:
+        # A bot's recipients were resolved and authorised by the triggering query
+        # (its subscribers, in its group), so deliver to them directly.
+        allowed = wanted
+    else:
+        # A person's run may only notify people they share a group with.
+        author_groups = set(
+            session.scalars(
+                sa.select(GroupUser.group_id).where(GroupUser.user_id == author_id)
+            ).all()
+        )
+        allowed = set(
+            session.scalars(
+                sa.select(GroupUser.user_id).where(
+                    GroupUser.user_id.in_(wanted),
+                    GroupUser.group_id.in_(author_groups or {-1}),
+                )
+            ).all()
+        )
+    if not allowed:
+        return
+    snippet = " ".join((answer or "").split())
+    if len(snippet) > 300:
+        snippet = snippet[:297] + "..."
+    where = f" on {context_type} {context_id}" if context_id else ""
+    text = (
+        f"Assistant triage{where}: {snippet}"
+        if snippet
+        else f"An assistant run{where} produced no answer."
+    )
+    url = f"/source/{context_id}" if context_type == "source" and context_id else None
+    for uid in allowed:
+        session.add(
+            UserNotification(
+                user_id=uid, text=text, notification_type="assistant", url=url
+            )
+        )
+
+
 def respond(message_id):
     session_context_id.set(uuid.uuid4().hex)
     try:
@@ -295,6 +471,7 @@ def respond(message_id):
             user_id = message.user_id
             channel = message.channel
             context_type, context_id = message.context_type, message.context_id
+            notify = message.notify
             if already_answered(session, message):
                 log(f"message {message_id} already has an answer; not answering twice")
                 return
@@ -307,18 +484,39 @@ def respond(message_id):
                 "first_name": user.first_name,
                 "last_name": user.last_name,
             }
-            token_id = service_token(session, user_id).id
+            requester_id = requester_of(session, message, user)
+            if requester_id is None:
+                log(f"message {message_id} is for a query that is gone; not answering")
+                return
+            if context_type == "filter" and not may_edit_filter(
+                session, requester_id, context_id
+            ):
+                context_type = context_id = None
+            token_id = service_token(session, requester_id).id
 
         # Answering takes minutes, so no connection is held while it runs.
+        trace, built = [], None
         try:
-            text = answer(conversation, context_type, context_id, profile, token_id)
+            text, trace, built = answer(
+                conversation, context_type, context_id, profile, token_id
+            )
         except Exception as exc:
             log(f"assistant failed on message {message_id}: {exc}")
-            text = (
-                "The assistant is not set up correctly; tell an administrator."
-                if misconfigured(exc)
-                else "Something went wrong while looking that up."
-            )
+            if misconfigured(exc):
+                text = "The assistant is not set up correctly; tell an administrator."
+            elif isinstance(exc, requests.exceptions.Timeout):
+                # Distinguishable from a fault in what was asked: a reader who
+                # cannot tell them apart reports the wrong one.
+                text = (
+                    "The model did not answer in time. Nothing is wrong with "
+                    "what you asked; try again."
+                )
+            else:
+                text = "Something went wrong while looking that up."
+
+        # A query run ends with a NOTIFY: yes/no marker deciding whether it is
+        # worth a notification; the comment is posted either way.
+        is_urgent, text = _parse_urgency(text)
 
         with DBSession() as session:
             session.execute(sa.delete(Token).where(Token.id == token_id))
@@ -334,8 +532,20 @@ def respond(message_id):
                         channel=asked[0],
                         text=text or "I could not find an answer to that.",
                         system=True,
+                        tool_calls=trace or None,
+                        proposal=built,
                     )
                 )
+                if notify:
+                    # The bot comment is the durable record; a notification only
+                    # fires when the triage flagged itself urgent, to avoid spam.
+                    post_triage_comment(
+                        session, user_id, notify, context_type, context_id, text
+                    )
+                    if is_urgent:
+                        deliver_notifications(
+                            session, user_id, notify, context_type, context_id, text
+                        )
             session.commit()
 
         if asked is None:

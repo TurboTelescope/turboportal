@@ -4,6 +4,7 @@ import time
 import requests
 
 from baselayer.app.env import load_env
+from baselayer.app.models import DBSession
 
 env, cfg = load_env()
 
@@ -22,6 +23,13 @@ HOST = "http://localhost" + (
 READINESS_PORTS = [
     cfg["ports.app_internal"] + i for i in range(cfg["server.processes"])
 ]
+
+
+def close_db_session():
+    try:
+        DBSession.remove()
+    except Exception:
+        DBSession.registry.clear()
 
 
 def is_loaded():

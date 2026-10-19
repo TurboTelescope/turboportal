@@ -26,7 +26,7 @@ from baselayer.log import make_log
 from skyportal.handlers.api.gcn import post_gcnevent_from_dictionary
 from skyportal.models import GcnProperty, Group, User
 from skyportal.utils.naive_datetime import utcnow_naive
-from skyportal.utils.services import check_loaded
+from skyportal.utils.services import check_loaded, close_db_session
 
 env, cfg = load_env()
 
@@ -128,7 +128,7 @@ def to_gcn_payload(candidate, group_ids, radius_multiplier=1.0):
         "trigger_id": name,
         "aliases": [f"EP#{name}"],
         "skymap": {"ra": ra, "dec": dec, "error": pos_err * float(radius_multiplier)},
-        "tags": ["EP", "X-ray"],
+        "tags": ["Einstein Probe", "X-ray"],
         "properties": {
             **{f: candidate.get(f) for f in PROPERTY_FIELDS},
             # already_ingested() keys the dedup on ep_name/ep_version.
@@ -263,6 +263,8 @@ def service(*args, **kwargs):
         except Exception as e:
             traceback.print_exc()
             log(f"Failed to poll EP data center: {e}")
+        finally:
+            close_db_session()
 
         time.sleep(poll_interval)
 

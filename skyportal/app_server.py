@@ -27,6 +27,8 @@ from skyportal.handlers.api import (
     AssignmentHandler,
     AssistantConversationHandler,
     AssistantMessageHandler,
+    AssistantQueryHandler,
+    AssistantQuerySubscriptionHandler,
     BrokerAlertsHandler,
     BrokerAPIsHandler,
     BrokerConeSearchHandler,
@@ -55,6 +57,7 @@ from skyportal.handlers.api import (
     CommentAttachmentUpdateHandler,
     CommentChannelHandler,
     CommentHandler,
+    CommentThreadHandler,
     ConfigHandler,
     DataAccessRequestHandler,
     DataAvailabilityHandler,
@@ -64,6 +67,11 @@ from skyportal.handlers.api import (
     DefaultGcnTagHandler,
     DefaultObservationPlanRequestHandler,
     DefaultSurveyEfficiencyRequestHandler,
+    DeploymentHandler,
+    DiscussionHandler,
+    DiscussionMemberHandler,
+    DiscussionMembershipHandler,
+    DiscussionMessageHandler,
     DuplicateSchedulingHandler,
     EarthquakeHandler,
     EarthquakeMeasurementHandler,
@@ -71,6 +79,8 @@ from skyportal.handlers.api import (
     EarthquakeStatusHandler,
     EnumTypesHandler,
     FacilityMessageHandler,
+    FeedbackHandler,
+    FeedbackReplyHandler,
     FilterHandler,
     FinderChartFacilitiesHandler,
     FollowupAPIsHandler,
@@ -132,6 +142,8 @@ from skyportal.handlers.api import (
     MMADetectorSpectrumHandler,
     MMADetectorTimeIntervalHandler,
     MovingObjectFollowupHandler,
+    MovingObjectTrackHandler,
+    MovingObjectTrackLookupHandler,
     NewsFeedHandler,
     ObjAcknowledgmentHandler,
     ObjClassificationHandler,
@@ -173,6 +185,7 @@ from skyportal.handlers.api import (
     ObservingRunBulkEditHandler,
     ObservingRunHandler,
     PhotometricSeriesHandler,
+    PhotometryAlertHandler,
     PhotometryCutoutRequestHandler,
     PhotometryHandler,
     PhotometryOriginHandler,
@@ -209,6 +222,7 @@ from skyportal.handlers.api import (
     SourceGroupsHandler,
     SourceHandler,
     SourceInterestHandler,
+    SourceInterestListHandler,
     SourceLabelsHandler,
     SourceNotificationHandler,
     SourceObservabilityPlotHandler,
@@ -261,6 +275,7 @@ from skyportal.handlers.api.internal import (
     EphemerisHandler,
     FilterWavelengthHandler,
     LogHandler,
+    MemoryHandler,
     NotificationHandler,
     NotificationTestHandler,
     PlotAssignmentAirmassHandler,
@@ -288,10 +303,12 @@ from skyportal.handlers.public import (
 )
 
 from . import model_util, openapi
-from .models import db_engine, init_db
+from .models import DBSession, db_engine, init_db
 from .utils.observability import setup_observability
 
 log = make_log("app_server")
+
+DEFAULT_SECRET_KEY = "abc01234"
 
 
 class CustomApplication(tornado.web.Application):
@@ -347,6 +364,12 @@ skyportal_handlers = [
     (r"/api/brokers/([0-9]+)/alerts/([^/]+)/cutouts", BrokerCutoutsHandler),
     (r"/api/brokers/([0-9]+)/cone_search", BrokerConeSearchHandler),
     (r"/api/brokers/([0-9]+)/alerts/([^/]+)/photometry", BrokerPhotometryHandler),
+    # Before the bare photometry route below, whose [^/]+ would otherwise
+    # swallow the id and never reach this one.
+    (r"/api/brokers/photometry/([0-9]+)/alert", PhotometryAlertHandler),
+    # Broker-served points were never saved, so they carry their own
+    # alert id instead of a row to look it up by.
+    (r"/api/brokers/photometry/alert", PhotometryAlertHandler),
     # non-numeric, so this never shadows the numeric /api/brokers/{id} routes
     (r"/api/brokers/photometry/([^/]+)", BrokerDefaultPhotometryHandler),
     (r"/api/brokers/([0-9]+)/alerts/([^/]+)/save", BrokerSaveHandler),
@@ -439,6 +462,8 @@ skyportal_handlers = [
         ReminderHandler,
     ),
     (r"/api/moving_object/([0-9A-Za-z-_\.\+]+)/followup", MovingObjectFollowupHandler),
+    (r"/api/moving_object/track", MovingObjectTrackHandler),
+    (r"/api/moving_object/track/([0-9A-Za-z-_.+]+)", MovingObjectTrackLookupHandler),
     (r"/api/earthquake/status", EarthquakeStatusHandler),
     (r"/api/earthquake(/.*)?", EarthquakeHandler),
     (r"/api/gcn_event(/.*)/alias", GcnEventAliasesHandler),
@@ -595,6 +620,7 @@ skyportal_handlers = [
         ScheduledObservationsHandler,
     ),
     (r"/api/duplicate_scheduling", DuplicateSchedulingHandler),
+    (r"/api/source_interests", SourceInterestListHandler),
     (r"/api/sources(/[0-9A-Za-z-_\.\+]+)/interests", SourceInterestHandler),
     (r"/api/sources(/[0-9A-Za-z-_\.\+]+)/interests(/[0-9]+)", SourceInterestHandler),
     (r"/api/sources(/[0-9A-Za-z-_\.\+]+)/color_mag", ObjColorMagHandler),
@@ -675,9 +701,22 @@ skyportal_handlers = [
     (r"/api/db_stats", StatsHandler),
     (r"/api/db_stats/history", StatsHistoryHandler),
     (r"/api/sysinfo", SysInfoHandler),
+    (r"/api/deployments", DeploymentHandler),
+    (r"/api/feedback(/[0-9]+)?", FeedbackHandler),
+    (r"/api/feedback/([0-9]+)/replies", FeedbackReplyHandler),
+    (r"/api/discussions(/[0-9]+)?", DiscussionHandler),
+    (r"/api/discussions/([0-9]+)/messages(/[0-9]+)?", DiscussionMessageHandler),
+    (r"/api/discussions/([0-9]+)/members(/[0-9]+)?", DiscussionMemberHandler),
+    (r"/api/discussions/([0-9]+)/membership", DiscussionMembershipHandler),
+    (r"/api/comment_threads", CommentThreadHandler),
     (r"/api/config", ConfigHandler),
     (r"/api/assistant/conversations", AssistantConversationHandler),
     (r"/api/assistant/messages", AssistantMessageHandler),
+    (r"/api/assistant_queries(/[0-9]+)?", AssistantQueryHandler),
+    (
+        r"/api/assistant_queries/([0-9]+)/subscription",
+        AssistantQuerySubscriptionHandler,
+    ),
     (r"/api/taxonomy(/.*)?", TaxonomyHandler),
     (r"/api/teams(/[0-9]+)?", TeamHandler),
     (r"/api/telescope(/[0-9]+)?", TelescopeHandler),
@@ -732,6 +771,7 @@ skyportal_handlers = [
     (r"/api/internal/tokens(/[0-9A-Za-z-]+)?", TokenHandler),
     (r"/api/internal/profile(/[0-9]+)?", ProfileHandler),
     (r"/api/internal/dbinfo", DBInfoHandler),
+    (r"/api/internal/memory", MemoryHandler),
     (r"/api/internal/source_views(/.*)?", SourceViewsHandler),
     (r"/api/internal/source_counts(/.*)?", SourceCountHandler),
     (r"/api/internal/source_savers(/.*)?", SourceSaverHandler),
@@ -815,11 +855,14 @@ def make_app(cfg, baselayer_handlers, baselayer_settings, process=None, env=None
         one key, 'debug'---true if launched with `--debug`.
 
     """
-    if cfg["app.secret_key"] == "abc01234":
-        print("!" * 80)
-        print("  Your server is insecure. Please update the secret string ")
-        print("  in the configuration file!")
-        print("!" * 80)
+    if cfg["app.secret_key"] == DEFAULT_SECRET_KEY:
+        if env is None or not env.debug:
+            raise RuntimeError(
+                "app.secret_key is the one shipped in config.yaml.defaults, so "
+                "session cookies and the credentials encrypted in the database "
+                "are readable by anyone. Set it to a random string."
+            )
+        log("Running on the default app.secret_key; development only")
 
     if cfg.get("testing", False):
         iers_conf.auto_download = False
@@ -934,6 +977,12 @@ def make_app(cfg, baselayer_handlers, baselayer_settings, process=None, env=None
         print("-" * 78)
 
     model_util.provision_public_group()
+    if not process:
+        try:
+            model_util.record_deployment()
+        except Exception as e:
+            log(f"Could not record the deployment: {e}")
+    DBSession.remove()
     app.openapi_spec = openapi.spec_from_handlers(handlers)
 
     return app

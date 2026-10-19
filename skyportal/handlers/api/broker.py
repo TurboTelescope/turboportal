@@ -1,4 +1,5 @@
 import copy
+import datetime
 from typing import Annotated, Any
 
 import sqlalchemy as sa
@@ -26,15 +27,29 @@ from sqlalchemy.orm.attributes import flag_modified
 from tornado.ioloop import IOLoop
 
 from baselayer.app.access import auth_or_token, permissions
+from baselayer.app.models import new_session
 from baselayer.log import make_log
 
 from ...broker_apis._photometry import db_photometry_points, super_obj_obj_ids
 from ...broker_apis.interface import survey_permissions
 from ...enum_types import ALLOWED_BROKER_CLASSNAMES
-from ...models import Broker, BrokerCredential, Filter, GroupUser, Obj, Stream
+from ...models import (
+    Broker,
+    BrokerCredential,
+    Filter,
+    GroupUser,
+    Instrument,
+    Obj,
+    Photometry,
+    Stream,
+)
+from ...utils.survey import survey_from_instrument
 from ..base import BaseHandler
+from .filter import delete_filter_on_broker
 
 log = make_log("api/broker")
+
+MAX_FILTER_ACTIVATIONS = 100
 
 AlertId = Annotated[
     str,
@@ -74,6 +89,18 @@ def strip_secrets(altdata, paths):
     return data
 
 
+def secrets_set(altdata, paths):
+    """The given dotted paths that hold a non-empty value in ``altdata``."""
+    found = []
+    for path in paths:
+        node = altdata or {}
+        for key in path.split("."):
+            node = node.get(key) if isinstance(node, dict) else None
+        if node:
+            found.append(path)
+    return found
+
+
 def merge_altdata(stored, incoming):
     """Overlay ``incoming`` on ``stored``; blank values keep what is stored.
 
@@ -96,6 +123,19 @@ DEFAULT_FIELDS = {
     "default_crossmatch": "cross_match_catalogs",
     "default_photometry": "get_photometry",
 }
+
+
+async def get_gaia_broker(session):
+    broker = await session.scalar(
+        sa.select(Broker).where(
+            Broker.active.is_(True), Broker.default_crossmatch.is_(True)
+        )
+    )
+    if broker is None or not broker.broker_class.implements()["gaia_cone_search"]:
+        return None
+    # Handed to a worker thread, which must not lazy-load through this async session.
+    session.expunge(broker)
+    return broker
 
 
 async def set_default(session, broker, field, value, *, check_connection=True):
@@ -136,6 +176,7 @@ def broker_to_dict(broker, include_altdata=False):
         "name": broker.name,
         "broker_classname": broker.broker_classname,
         "active": broker.active,
+        "ingest": broker.ingest,
         "default_alert_search": broker.default_alert_search,
         "default_crossmatch": broker.default_crossmatch,
         "default_photometry": broker.default_photometry,
@@ -146,9 +187,9 @@ def broker_to_dict(broker, include_altdata=False):
         "filter_kind": broker.broker_class.filter_kind,
     }
     if include_altdata:
-        data["altdata"] = strip_secrets(
-            broker.altdata, broker.broker_class.secret_config_fields()
-        )
+        paths = broker.broker_class.secret_config_fields()
+        data["altdata"] = strip_secrets(broker.altdata, paths)
+        data["secrets_set"] = secrets_set(broker.altdata, paths)
     return data
 
 
@@ -199,6 +240,7 @@ class BrokerHandler(BaseHandler):
                 name=name,
                 broker_classname=broker_classname,
                 active=body.active,
+                ingest=body.ingest,
             )
             if broker.broker_class.implements()["test_connection"]:
                 broker.active = False
@@ -306,6 +348,8 @@ class BrokerHandler(BaseHandler):
                 broker.altdata = altdata
             if "active" in fields_set:
                 broker.active = body.active
+            if "ingest" in fields_set:
+                broker.ingest = body.ingest
             tested = False
             if (
                 checks_credentials
@@ -468,6 +512,98 @@ class BrokerCutoutsHandler(BaseHandler):
             except Exception as e:
                 return self.error(f"Error fetching cutouts from {broker.name}: {e}")
             return self.success(data=data)
+
+
+class PhotometryAlertHandler(BaseHandler):
+    """The alert one photometry point came from.
+
+    The lightcurve payload is deliberately slim and carries no alert id, so the
+    point is identified by its own id and the alert resolved here. The caller
+    then asks the broker for the cutouts, which is the expensive half and only
+    worth paying for the point someone actually clicked.
+    """
+
+    @auth_or_token
+    async def get(self, photometry_id: int | None = None):
+        """
+        ---
+        summary: Get the alert a photometry point came from
+        description: Return the alert id, survey and broker for the alert a
+          photometry point was ingested from, enough to fetch its cutouts.
+          Forced photometry has no alert behind it and reports that.
+        tags:
+          - brokers
+          - photometry
+        responses:
+          200:
+            content:
+              application/json:
+                schema: Success
+          400:
+            content:
+              application/json:
+                schema: Error
+        """
+        async with self.AsyncSession() as session:
+            phot = None
+            if photometry_id is not None:
+                phot = await session.scalar(
+                    Photometry.select(self.current_user)
+                    .options(joinedload(Photometry.instrument))
+                    .where(Photometry.id == int(photometry_id))
+                )
+                if phot is None:
+                    return self.error(f"No accessible photometry point {photometry_id}")
+                candid = (phot.altdata or {}).get("candid")
+            else:
+                # A point the broker served that was never saved has no row to
+                # look up, so it arrives carrying its own alert id. Only digits:
+                # the id is echoed back and then used to address the broker.
+                candid = self.get_argument("candid", None)
+                if candid is not None and not str(candid).isdigit():
+                    return self.error(f"{candid!r} is not an alert id")
+
+            if candid in (None, ""):
+                return self.error(
+                    "This point carries no alert id, so it has no cutouts. Forced "
+                    "photometry has no alert behind it, and points ingested before "
+                    "alert ids were recorded do not carry one.",
+                    status=404,
+                )
+
+            broker = await session.scalar(
+                Broker.select(self.current_user).where(
+                    Broker.active.is_(True), Broker.default_alert_search.is_(True)
+                )
+            )
+            if broker is None or not broker.broker_class.implements()["get_cutouts"]:
+                return self.error("No broker configured to serve cutouts.")
+
+            survey = self.get_argument("survey", None)
+            ra = dec = None
+            if phot is not None:
+                survey = (
+                    survey_from_instrument(phot.instrument.name)
+                    if phot.instrument
+                    else survey
+                )
+                obj = await session.scalar(
+                    Obj.select(self.current_user).where(Obj.id == phot.obj_id)
+                )
+                # The point's own position where it has one: a mover is somewhere
+                # different at every epoch, and the object's position would send
+                # the thumbnail's survey links to the wrong sky.
+                ra = phot.ra if phot.ra is not None else (obj.ra if obj else None)
+                dec = phot.dec if phot.dec is not None else (obj.dec if obj else None)
+            return self.success(
+                data={
+                    "candid": str(candid),
+                    "broker_id": broker.id,
+                    "survey": survey,
+                    "ra": ra,
+                    "dec": dec,
+                }
+            )
 
 
 class BrokerConeSearchHandler(BaseHandler):
@@ -780,6 +916,12 @@ class BrokerFilterTestHandler(BaseHandler):
                 return self.error("A filter preview needs both start_jd and end_jd.")
             params["permissions"] = alert_permissions(self.current_user, session)
             try:
+                from ...utils.gcn_crossmatch import with_event_region
+
+                params = with_event_region(session, self.current_user, params)
+            except ValueError as e:
+                return self.error(str(e))
+            try:
                 data = broker.broker_class.test_filter(broker, session, **params)
             except Exception as e:
                 return self.error(f"Error running filter on {broker.name}: {e}")
@@ -794,9 +936,10 @@ class BrokerFilterValidateHandler(BaseHandler):
         """
         ---
         summary: Validate a broker filter version for activation
-        description: Run the broker's activation validation for a filter version
-          without changing state, and record the result on the filter so it can
-          be activated (skyportal gates activation on this).
+        description: Start the broker's activation validation for a filter
+          version in the background. The version is marked pending on the
+          filter until the verdict is recorded there (skyportal gates
+          activation on it).
         tags:
           - brokers
         responses:
@@ -827,23 +970,10 @@ class BrokerFilterValidateHandler(BaseHandler):
             ).first()
             if f is None or not isinstance(f.altdata, dict) or "boom" not in f.altdata:
                 return self.error("Filter not found or not broker-managed.")
-            boom_filter_id = (f.altdata.get("boom") or {}).get("filter_id")
-            try:
-                result = broker.broker_class.validate_filter(
-                    broker,
-                    session,
-                    boom_filter_id=boom_filter_id,
-                    fid=body.fid,
-                )
-            except Exception as e:
-                return self.error(f"Error validating filter on {broker.name}: {e}")
-            # Record the verdict per version (fid) so each version keeps its own
-            # result and message; activation reads this. Validating one version no
-            # longer clobbers another's verdict.
-            _store_version_validation(f.altdata, result)
-            flag_modified(f, "altdata")
-            session.commit()
-            return self.success(data=result)
+            if not body.fid:
+                return self.error("fid is required.")
+            _start_version_validation(session, broker, f, body.fid)
+            return self.success(data={"fid": body.fid, "pending": True})
 
 
 def _get_broker(handler, session, broker_id):
@@ -861,6 +991,38 @@ async def _get_broker_async(handler, session, broker_id):
     ).first()
 
 
+async def _broker_filter_states(handler, session, filters):
+    by_broker = {}
+    for f in filters:
+        boom = f.altdata.get("boom") if isinstance(f.altdata, dict) else None
+        if (
+            f.broker_id is not None
+            and isinstance(boom, dict)
+            and boom.get("filter_id") is not None
+        ):
+            by_broker.setdefault(f.broker_id, {})[boom["filter_id"]] = f.id
+    states = {}
+    for broker_id, ids in by_broker.items():
+        broker = await _get_broker_async(handler, session, broker_id)
+        if (
+            broker is None
+            or not broker.active
+            or not broker.broker_class.implements()["get_filters"]
+        ):
+            continue
+        try:
+            remote = await IOLoop.current().run_in_executor(
+                None, broker.broker_class.get_filters, broker, session
+            )
+        except Exception as e:
+            log(f"Could not list the filters of broker {broker.name}: {e}")
+            continue
+        for r in remote or []:
+            if r.get("id") in ids:
+                states[ids[r["id"]]] = bool(r.get("active"))
+    return states
+
+
 def _version_validation(altdata, fid):
     """The stored validation verdict for a filter version, or None.
 
@@ -876,6 +1038,24 @@ def _version_validation(altdata, fid):
     return verdict or None
 
 
+def _log_activation(altdata, fid, active, switched, username):
+    activations = altdata.setdefault("boom", {}).setdefault("activations", [])
+    activations.append(
+        {
+            "fid": fid,
+            "active": active,
+            "switched": switched,
+            "by": username,
+            "at": datetime.datetime.now(datetime.UTC).isoformat(),
+        }
+    )
+    del activations[:-MAX_FILTER_ACTIVATIONS]
+
+
+def _version_info(altdata, fid):
+    return altdata.setdefault("boom", {}).setdefault("versions", {}).setdefault(fid, {})
+
+
 def _store_version_validation(altdata, verdict):
     """Persist a BOOM validation verdict under its fid in the per-fid map."""
     boom = altdata.setdefault("boom", {})
@@ -883,6 +1063,64 @@ def _store_version_validation(altdata, verdict):
         "passed": bool(verdict.get("passed")),
         "message": verdict.get("message"),
     }
+
+
+def _start_version_validation(session, broker, f, fid):
+    f.altdata["boom"].setdefault("validations", {})[fid] = {
+        "passed": False,
+        "message": None,
+        "pending": True,
+        "started_at": datetime.datetime.now(datetime.UTC).isoformat(),
+    }
+    flag_modified(f, "altdata")
+    session.commit()
+    # Replays a night of alerts, longer than the proxy timeout.
+    IOLoop.current().run_in_executor(None, _validate_version, broker.id, f.id, fid)
+
+
+def _validate_version(broker_id, filter_id, fid):
+    # DBSession's scope is a contextvar, not propagated to executor threads.
+    with new_session() as session:
+        broker = session.get(Broker, broker_id)
+        f = session.get(Filter, filter_id)
+        try:
+            verdict = broker.broker_class.validate_filter(
+                broker,
+                session,
+                boom_filter_id=f.altdata["boom"]["filter_id"],
+                fid=fid,
+            )
+        except Exception as e:
+            log(f"Validation of filter {filter_id} version {fid}: {e}")
+            verdict = {"fid": fid, "passed": False, "message": f"Error: {e}"}
+        session.refresh(f)
+        _store_version_validation(f.altdata, verdict)
+        _apply_pending_switch(broker, session, f, fid, bool(verdict.get("passed")))
+        flag_modified(f, "altdata")
+        session.commit()
+
+
+def _apply_pending_switch(broker, session, f, fid, passed):
+    boom = f.altdata.get("boom") or {}
+    pending = boom.get("pending_switch") or {}
+    if pending.get("fid") != fid:
+        return
+    boom.pop("pending_switch")
+    if not passed:
+        return
+    try:
+        broker.broker_class.update_filter(
+            broker,
+            session,
+            boom_filter_id=boom["filter_id"],
+            active=True,
+            active_fid=fid,
+            skip_validation=True,
+        )
+    except Exception as e:
+        log(f"Switching filter {f.id} to version {fid}: {e}")
+        return
+    _log_activation(f.altdata, fid, True, True, pending.get("by"))
 
 
 class BrokerFilterModulesHandler(BaseHandler):
@@ -1235,24 +1473,53 @@ class BrokerFiltersHandler(BaseHandler):
                     flag_modified(f, "altdata")
             except Exception as e:
                 return self.error(f"Error creating filter on {broker.name}: {e}")
-            # Validate the new version now so its verdict (pass, or the failure
-            # reason) is attached immediately, rather than only once the user
-            # remembers to validate it. Best-effort: a slow/failed validation must
-            # not fail the save -- the user can still validate manually.
-            if broker.broker_class.implements()["validate_filter"]:
+            username = self.associated_user_object.username
+            version = _version_info(f.altdata, new_fid)
+            version["created_by"] = username
+            if body.comment:
+                version["comment"] = body.comment
+            switch_error = None
+            pending_switch = False
+            if boom_filter_id is not None and body.set_as_active:
                 try:
-                    verdict = broker.broker_class.validate_filter(
-                        broker,
-                        session,
-                        boom_filter_id=(f.altdata.get("boom") or {}).get("filter_id"),
-                        fid=new_fid,
+                    current = broker.broker_class.get_filters(
+                        broker, session, boom_filter_id=boom_filter_id
                     )
-                    _store_version_validation(f.altdata, verdict)
-                    flag_modified(f, "altdata")
+                    if current.get("active"):
+                        f.altdata["boom"]["pending_switch"] = {
+                            "fid": new_fid,
+                            "by": username,
+                            "at": datetime.datetime.now(datetime.UTC).isoformat(),
+                        }
+                        pending_switch = True
+                    else:
+                        f.altdata["boom"].pop("pending_switch", None)
+                        broker.broker_class.update_filter(
+                            broker,
+                            session,
+                            boom_filter_id=boom_filter_id,
+                            active=False,
+                            active_fid=new_fid,
+                            skip_validation=True,
+                        )
+                        _log_activation(f.altdata, new_fid, False, True, username)
                 except Exception as e:
-                    log(f"Auto-validation of filter {f.id} version {new_fid}: {e}")
-            session.commit()
-            return self.success(data={"id": f.id})
+                    switch_error = (
+                        "The version was saved but could not be made the active "
+                        f"one: {e}"
+                    )
+            if broker.broker_class.implements()["validate_filter"]:
+                _start_version_validation(session, broker, f, new_fid)
+            else:
+                session.commit()
+            return self.success(
+                data={
+                    "id": f.id,
+                    "fid": new_fid,
+                    "switch_error": switch_error,
+                    "pending_switch": pending_switch,
+                }
+            )
 
     @permissions(["Upload data"])
     def patch(
@@ -1262,7 +1529,8 @@ class BrokerFiltersHandler(BaseHandler):
         ---
         summary: Update a broker filter
         description: Activate a version (``active``/``active_fid``, forwarded to
-          the broker) or toggle autoAnnotate/autoSave/autoFollowup flags.
+          the broker), comment on a version (``fid``/``comment``) or toggle
+          autoAnnotate/autoSave/autoFollowup flags.
         tags:
           - brokers
         responses:
@@ -1315,6 +1583,19 @@ class BrokerFiltersHandler(BaseHandler):
                                     else ""
                                 )
                             )
+                    if {
+                        "previous_active_fid",
+                        "previous_active",
+                    } <= body.model_fields_set:
+                        previous = {
+                            "active_fid": body.previous_active_fid,
+                            "active": body.previous_active,
+                        }
+                    else:
+                        previous = broker.broker_class.get_filters(
+                            broker, session, boom_filter_id=boom_filter_id
+                        )
+                    switching = body.active_fid != previous.get("active_fid")
                     broker.broker_class.update_filter(
                         broker,
                         session,
@@ -1323,6 +1604,16 @@ class BrokerFiltersHandler(BaseHandler):
                         active_fid=body.active_fid,
                         skip_validation=True,
                     )
+                    f.altdata["boom"].pop("pending_switch", None)
+                    if switching or bool(body.active) != bool(previous.get("active")):
+                        _log_activation(
+                            f.altdata,
+                            body.active_fid,
+                            bool(body.active),
+                            switching,
+                            self.associated_user_object.username,
+                        )
+                    flag_modified(f, "altdata")
                 for flag in ("autoAnnotate", "autoFollowup"):
                     if flag in body.model_fields_set:
                         f.altdata[flag] = getattr(body, flag)
@@ -1381,6 +1672,15 @@ class BrokerFiltersHandler(BaseHandler):
                     else:
                         f.altdata["autoFollowupDefaultId"] = int(default_id)
                     flag_modified(f, "altdata")
+                if "comment" in body.model_fields_set:
+                    if not body.fid:
+                        return self.error("fid is required to comment on a version.")
+                    version = _version_info(f.altdata, body.fid)
+                    if body.comment:
+                        version["comment"] = body.comment
+                    else:
+                        version.pop("comment", None)
+                    flag_modified(f, "altdata")
             except Exception as e:
                 return self.error(f"Error updating filter on {broker.name}: {e}")
             session.commit()
@@ -1418,20 +1718,23 @@ class BrokerFiltersHandler(BaseHandler):
             ).first()
             if f is None:
                 return self.error(f"Cannot find a filter with ID: {filter_id}.")
-            boom = (
-                (f.altdata or {}).get("boom") if isinstance(f.altdata, dict) else None
+            user = self.associated_user_object
+            is_group_admin = session.scalar(
+                sa.select(GroupUser).where(
+                    GroupUser.group_id == f.group_id,
+                    GroupUser.user_id == user.id,
+                    GroupUser.admin.is_(True),
+                )
             )
-            if (
-                isinstance(boom, dict)
-                and boom.get("filter_id") is not None
-                and broker.broker_class.implements()["delete_filter"]
+            if not is_group_admin and not {"System admin", "Manage groups"} & set(
+                user.permissions
             ):
-                try:
-                    broker.broker_class.delete_filter(
-                        broker, session, boom_filter_id=boom["filter_id"]
-                    )
-                except Exception:
-                    pass
+                return self.error(
+                    "Insufficient permissions: must be a group admin or system "
+                    "admin to delete a filter.",
+                    status=403,
+                )
+            delete_filter_on_broker(broker, f, session)
             session.delete(f)
             session.commit()
             return self.success()
@@ -1489,13 +1792,32 @@ class BrokerFilterCatalogHandler(BaseHandler):
             total_matches = await session.scalar(
                 sa.select(sa.func.count()).select_from(stmt.subquery())
             )
-            filters = (
-                await session.scalars(
-                    stmt.order_by(Filter.name, Filter.id)
-                    .limit(n_per_page)
-                    .offset((page_number - 1) * n_per_page)
+            offset = (page_number - 1) * n_per_page
+            if query.sortBy == "active":
+                filters = (
+                    await session.scalars(stmt.order_by(Filter.name, Filter.id))
+                ).all()
+                active = await _broker_filter_states(self, session, filters)
+                rank = (
+                    {True: 0, False: 1}
+                    if query.sortOrder == "desc"
+                    else {False: 0, True: 1}
                 )
-            ).all()
+                filters = sorted(filters, key=lambda f: rank.get(active.get(f.id), 2))[
+                    offset : offset + n_per_page
+                ]
+            else:
+                order = (
+                    (Filter.name.desc(), Filter.id.desc())
+                    if query.sortOrder == "desc"
+                    else (Filter.name, Filter.id)
+                )
+                filters = (
+                    await session.scalars(
+                        stmt.order_by(*order).limit(n_per_page).offset(offset)
+                    )
+                ).all()
+                active = await _broker_filter_states(self, session, filters)
             user = self.associated_user_object
             manages_groups = bool(
                 {"System admin", "Manage groups"} & set(user.permissions)
@@ -1525,6 +1847,7 @@ class BrokerFilterCatalogHandler(BaseHandler):
                             "altdata": f.altdata,
                             "group_admin": manages_groups
                             or f.group_id in admin_group_ids,
+                            "active": active.get(f.id),
                         }
                         for f in filters
                     ],
@@ -1645,6 +1968,7 @@ class BrokerCredentialHandler(BaseHandler):
                     "broker_id": row.broker_id,
                     "topics": row.topics or [],
                     "topic_filter_ids": row.topic_filter_ids or {},
+                    "topic_status": row.topic_status or {},
                     # Secrets report presence only; the rest prefill the form.
                     "credentials": {
                         k: v for k, v in altdata.items() if k not in secret_fields
@@ -1716,6 +2040,9 @@ class BrokerCredentialHandler(BaseHandler):
                 row.topics = params.topics
             if params.topic_filter_ids is not None:
                 routing = {str(k): v for k, v in params.topic_filter_ids.items()}
+                # Routing for a topic nobody subscribes to does nothing here.
+                subscribed = set(row.topics or ())
+                routing = {k: v for k, v in routing.items() if k in subscribed}
                 wanted = {fid for ids in routing.values() for fid in ids}
                 if wanted:
                     allowed = (

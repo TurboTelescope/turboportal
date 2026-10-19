@@ -161,6 +161,12 @@ const FieldSelect = ({
   );
 };
 
+const PLOT_LAYERS = {
+  localization: true,
+  instrument: true,
+  sun_moon: true,
+};
+
 interface ObservationPlanGlobeProps {
   gcnEvent: any;
   loc: any;
@@ -179,32 +185,22 @@ const ObservationPlanGlobe = ({
   setSelectedFields,
   selectedProjection = "orthographic",
   airmassValue = 2.5,
-}: ObservationPlanGlobeProps) => {
-  const displayOptionsDefault = {
-    localization: true,
-    sources: false,
-    galaxies: false,
-    instrument: true,
-    observations: false,
-  };
-  return !loc ||
-    gcnEvent?.localizations?.length === 0 ||
-    gcnEvent?.localizations?.find((l: any) => l.id === loc.id) === undefined ? (
-    <CircularProgress />
-  ) : (
+}: ObservationPlanGlobeProps) =>
+  gcnEvent?.localizations?.some((l: any) => l.id === loc?.id) ? (
     <Suspense fallback={<CircularProgress />}>
       <LocalizationPlot
         localization={loc}
         instrument={skymapInstrument}
-        options={displayOptionsDefault}
+        options={PLOT_LAYERS}
         selectedFields={selectedFields}
         setSelectedFields={setSelectedFields}
         projection={selectedProjection}
         airmass_threshold={airmassValue}
       />
     </Suspense>
+  ) : (
+    <CircularProgress />
   );
-};
 
 const MyObjectFieldTemplate = (props: any) => {
   const { properties } = props;
@@ -489,8 +485,9 @@ const ObservationPlanRequestForm = ({
         observation_plans: planQueues,
         combine_plans: multiPlansChecked,
       };
-      await submitObservationPlanRequest(json);
-      setPlanQueues([]);
+      const result = await submitObservationPlanRequest(json);
+      // the server creates none of the plans if any is rejected
+      if (!("error" in result)) setPlanQueues([]);
     }
     setIsSubmitting(false);
   };

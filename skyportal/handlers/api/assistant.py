@@ -6,7 +6,7 @@ from baselayer.app.access import auth_or_token
 from baselayer.app.env import load_env
 
 from ...models import AssistantMessage
-from ...utils.assistant import is_enabled, post_to_assistant
+from ...utils.assistant import CONTEXT_DESCRIPTIONS, is_enabled, post_to_assistant
 from ..base import BaseHandler
 
 _, cfg = load_env()
@@ -28,6 +28,14 @@ class AssistantMessagePostBody(BaseModel):
     )
     context_id: str | None = Field(
         default=None, description="ID of the resource the user is looking at."
+    )
+    notify: dict | None = Field(
+        default=None,
+        description=(
+            "Who to notify with the answer once it is ready, as "
+            '{"users": [ids], "groups": [ids]}. The author is always notified; '
+            "named recipients must share a group with the author."
+        ),
     )
 
 
@@ -106,6 +114,8 @@ class AssistantMessageHandler(BaseHandler):
             return self.error("No assistant is configured on this instance.")
         if not body.text.strip():
             return self.error("`text` must not be empty")
+        if body.context_type not in (None, *CONTEXT_DESCRIPTIONS):
+            return self.error(f"Invalid context_type: {body.context_type}")
 
         async with self.AsyncSession() as session:
             message = AssistantMessage(
@@ -114,6 +124,7 @@ class AssistantMessageHandler(BaseHandler):
                 channel=body.channel or None,
                 context_type=body.context_type,
                 context_id=body.context_id,
+                notify=body.notify,
             )
             session.add(message)
             await session.commit()
