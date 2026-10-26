@@ -1254,6 +1254,18 @@ async def bulk_upsert_photometry(session, params, duplicates, return_inserted=Fa
     return ids
 
 
+def _original_user_data(packet):
+    """The posted fields kept beside flux/fluxerr (only these, to halve the DB size)."""
+    keys = ["limiting_mag", "magsys", "limiting_mag_nsigma"]
+    data = {
+        key: packet[key]
+        for key in keys
+        if key in packet
+        and not (isinstance(packet[key], float) and np.isnan(packet[key]))
+    }
+    return data or None
+
+
 async def insert_new_photometry_data(
     df,
     instrument_cache,
@@ -1294,16 +1306,7 @@ async def insert_new_photometry_data(
         flux = packet.pop("standardized_flux")
         fluxerr = packet.pop("standardized_fluxerr")
 
-        # reduce the DB size by ~2x
-        keys = ["limiting_mag", "magsys", "limiting_mag_nsigma"]
-        original_user_data = {
-            key: packet[key]
-            for key in keys
-            if key in packet
-            and not (isinstance(packet[key], float) and np.isnan(packet[key]))
-        }
-        if original_user_data == {}:
-            original_user_data = None
+        original_user_data = _original_user_data(packet)
 
         utcnow = utcnow_naive()
         # original_user_data and altdata are JSONB columns; with pg_insert.values()
@@ -2087,8 +2090,12 @@ class PhotometryHandler(BaseHandler):
                         duplicate.ref_fluxerr = numpy_to_native(
                             df.loc[df_index]["ref_standardized_fluxerr"]
                         )
-                        duplicate.altdata = json.dumps(
-                            df.loc[df_index]["altdata"], cls=NumpyEncoder
+                        posted_altdata = df.loc[df_index].get("altdata")
+                        if isinstance(posted_altdata, dict):
+                            duplicate.altdata = numpy_to_native(posted_altdata)
+                        # limiting_mag is served from original_user_data
+                        duplicate.original_user_data = numpy_to_native(
+                            _original_user_data(df.loc[df_index])
                         )
                         duplicate.modified = utcnow_naive()
                         updated_ids.append(duplicate.id)
@@ -2135,6 +2142,30 @@ class PhotometryHandler(BaseHandler):
                 # required to make ignore_flux+overwrite_flux land.
                 if updated_ids:
                     await session.flush()
+                if ignore_flux and overwrite_flux and updated_ids:
+                    for oid in {
+                        d.obj_id
+                        for _, d in duplicated_photometry
+                        if d.id in updated_ids
+                    }:
+                        phot_stat = (
+                            await session.scalars(
+                                PhotStat.select(
+                                    session.user_or_token, mode="update"
+                                ).where(PhotStat.obj_id == oid)
+                            )
+                        ).first()
+                        if phot_stat is None:
+                            phot_stat = PhotStat(obj_id=oid)
+                            session.add(phot_stat)
+                        all_phot = (
+                            await session.scalars(
+                                sa.select(Photometry).where(Photometry.obj_id == oid)
+                            )
+                        ).all()
+                        phot_stat.full_update(all_phot)
+                        for phot in all_phot:
+                            session.expunge(phot)
 
                 if len(new_photometry) > 0:
                     ids, upload_id = await insert_new_photometry_data(

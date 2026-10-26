@@ -645,14 +645,21 @@ def test_token_user_post_put_photometry_data(
         "mjd": [59400, 59401, 59403],
         "mag": [20.2, 20.3, np.random.uniform(18, 19)],
         "magerr": [0.05, 0.1, np.random.uniform(0.01, 0.1)],
-        "limiting_mag": [21.0, 20.1, 20.2],
+        "limiting_mag": [21.0, 20.4, 20.2],
         "magsys": ["ab", "ab", "ab"],
         "filter": ["ztfr", "ztfg", "ztfr"],
         "ra": [42.01, 42.01, 42.02],
         "dec": [42.02, 42.01, 42.03],
         "origin": [None, "omg", "lol"],
+        "altdata": [{"image_id": 1}, {"image_id": 2}, {"image_id": 3}],
         "group_ids": [public_group.id],
     }
+
+    status, data = api(
+        "GET", f"sources/{public_source.id}/phot_stat", token=super_admin_token
+    )
+    assert status == 200
+    g_mean_before = data["data"]["mean_mag_per_filter"]["ztfg"]
 
     # this feature is reserved to super admin, so this should fail
     status, data = api(
@@ -703,6 +710,15 @@ def test_token_user_post_put_photometry_data(
     assert data["mjd"] == 59401
     assert data["mag"] == 20.3
     assert data["magerr"] == 0.1
+    assert data["limiting_mag"] == pytest.approx(20.4)
+    assert data["altdata"] == {"image_id": 2}
+
+    # the overwritten point is a magnitude fainter, and the stats follow it
+    status, data = api(
+        "GET", f"sources/{public_source.id}/phot_stat", token=super_admin_token
+    )
+    assert status == 200
+    assert data["data"]["mean_mag_per_filter"]["ztfg"] > g_mean_before
 
 
 def test_token_user_post_put_get_photometry_data(
