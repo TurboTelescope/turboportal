@@ -35,6 +35,10 @@ class TNSWarning(Exception):
     pass
 
 
+# An object within this of the source is the same transient on TNS
+EXISTING_TNS_RADIUS_ARCSEC = 3.0
+
+
 def apply_existing_tns_report_rules(
     sharing_service, submission_request, internal_name=None
 ):
@@ -70,6 +74,27 @@ def apply_existing_tns_report_rules(
     _, existing_tns_name = get_IAUname(
         altdata["api_key"], tns_headers, obj_id=tns_internal_name, closest=True
     )
+    obj = submission_request.obj
+    if (
+        existing_tns_name is None
+        and not sharing_service.publish_existing_tns_objects
+        and obj is not None
+        and obj.ra is not None
+        and obj.dec is not None
+    ):
+        # Another survey's report of the same transient carries that survey's
+        # internal name, which the search above cannot find, so the position
+        # is searched as well (AT 2026ahaf, 2026-10-28: reported by GOTO as
+        # GOTO26lkz, 0.4 arcsec from TURBO26aaorslo; the name search found
+        # nothing and a TURBO report would have gone out).
+        _, existing_tns_name = get_IAUname(
+            altdata["api_key"],
+            tns_headers,
+            ra=obj.ra,
+            dec=obj.dec,
+            radius=EXISTING_TNS_RADIUS_ARCSEC,
+            closest=True,
+        )
     if existing_tns_name is not None:
         if not sharing_service.publish_existing_tns_objects:
             raise TNSWarning(f"{obj_id} already posted to TNS as {existing_tns_name}.")
